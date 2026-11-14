@@ -20,7 +20,12 @@ from pytgcalls.types import MediaStream, AudioQuality
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand, BotCommandScopeAllGroupChats, ReactionTypeEmoji
+from aiogram.types import (
+    BotCommand,
+    BotCommandScopeAllGroupChats,
+    ChatMemberUpdated,
+    ReactionTypeEmoji,
+)
 from aiogram.enums import ParseMode
 
 logging.basicConfig(level=logging.INFO)
@@ -34,6 +39,16 @@ SESSION_STRING = os.environ["SESSION_STRING"]
 OWNER_ID = int(os.environ["OWNER_ID"])
 
 
+def _parse_allowed_groups() -> set[int]:
+    raw = os.environ.get("ALLOWED_GROUPS", "")
+    allowed: set[int] = set()
+    for part in raw.replace(";", ",").replace(" ", ",").split(","):
+        token = part.strip()
+        if token and token.lstrip("-").isdigit():
+            allowed.add(int(token))
+    return allowed
+
+
 def _get_music_vault_id() -> int | str | None:
     raw = os.environ.get("MUSIC_VAULT_ID")
     if not raw:
@@ -42,6 +57,7 @@ def _get_music_vault_id() -> int | str | None:
     return int(val) if val.lstrip("-").isdigit() else val
 
 
+ALLOWED_GROUPS: set[int] = _parse_allowed_groups()
 MUSIC_VAULT_ID = _get_music_vault_id()
 AUTO_DELETE_DELAY = 45
 OS_MUTE_SWEEP_INTERVAL = 10
@@ -86,6 +102,25 @@ class GroupState:
 
 _groups: dict[int, GroupState] = {}
 _call_id_to_chat: dict[int, int] = {}
+
+
+def _is_group_allowed(chat_id: int) -> bool:
+    return chat_id in ALLOWED_GROUPS
+
+
+async def _reject_unauthorized_group(chat_id: int):
+    logger.warning("Akses ditolak untuk grup tidak terdaftar: %s", chat_id)
+    try:
+        await bot.send_message(
+            chat_id,
+            "⛔ Grup ini tidak terdaftar di whitelist bot. Bot akan keluar otomatis.",
+        )
+    except Exception:
+        pass
+    try:
+        await bot.leave_chat(chat_id)
+    except Exception:
+        pass
 
 
 def _get_group_state(chat_id: int) -> GroupState:
@@ -239,8 +274,11 @@ async def _send_group_msg(
             return None
 
 
-# --- AUTO-JOIN AKUN ASISTEN KE GRUP ---
+# --- AUTO-JOIN AKUN ASISTEN KE GRUP WHITELIST ---
 async def _ensure_assistant_in_group(chat_id: int) -> bool:
+    if not _is_group_allowed(chat_id):
+        return False
+
     try:
         await assistant.get_chat_member(chat_id, _assistant_user_id)
         return True
@@ -371,6 +409,8 @@ async def _periodic_os_mute_enforcer():
     await asyncio.sleep(5)
     while True:
         for chat_id, st in list(_groups.items()):
+            if not _is_group_allowed(chat_id):
+                continue
             try:
                 if not assistant:
                     continue
@@ -407,6 +447,8 @@ async def _periodic_os_mute_enforcer():
 
 
 async def _ensure_voice_chat_open_and_muted(chat_id: int):
+    if not _is_group_allowed(chat_id):
+        return None
     st = _get_group_state(chat_id)
     try:
         joined = await _ensure_assistant_in_group(chat_id)
@@ -473,7 +515,7 @@ async def _enforce_os_listener_mute(client: Client, update, users, chats):
     try:
         call_id = getattr(update.call, "id", None)
         chat_id = _call_id_to_chat.get(call_id)
-        if not chat_id:
+        if not chat_id or not _is_group_allowed(chat_id):
             return
 
         privileged_ids = await _get_privileged_os_user_ids(chat_id)
@@ -725,7 +767,7 @@ async def on_tgcalls_update(_, update):
     update_name = type(update).__name__
     if "StreamEnded" in update_name or "StreamAudioEnded" in update_name:
         chat_id = getattr(update, "chat_id", None)
-        if chat_id:
+        if chat_id and _is_group_allowed(int(chat_id)):
             await _play_next_in_queue(int(chat_id))
 
 
@@ -782,10 +824,23 @@ async def enqueue_song_request(
     return True
 
 
+# --- AUTO-LEAVE SAAT BOT DITAMBAHKAN KE GRUP NON-WHITELIST ---
+@dp.my_chat_member(F.chat.type.in_({"group", "supergroup"}))
+async def on_bot_added_to_group(event: ChatMemberUpdated):
+    chat_id = event.chat.id
+    new_status = event.new_chat_member.status
+    if new_status in ("member", "administrator") and not _is_group_allowed(chat_id):
+        await _reject_unauthorized_group(chat_id)
+
+
 # --- COMMAND HANDLERS ---
 @dp.message(Command("play", "reqsong"), F.chat.type.in_({"group", "supergroup"}))
 async def cmd_play_song(message: types.Message):
     chat_id = message.chat.id
+    if not _is_group_allowed(chat_id):
+        await _reject_unauthorized_group(chat_id)
+        return
+
     user = message.from_user
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
@@ -817,10 +872,16 @@ async def cmd_play_song(message: types.Message):
 @dp.message(Command("np", "nowplaying"), F.chat.type.in_({"group", "supergroup"}))
 async def cmd_now_playing(message: types.Message):
     chat_id = message.chat.id
-    st = _get_group_state(chat_id)
+    if not _is_group_allowed(chat_id):
+        await _reject_unauthorized_group(chat_id)
+        return
 
+    st = _get_group_state(chat_id)
     if not st.current_track:
-        err = await message.reply("🔇 Tidak ada lagu yang diputar. Ketik <code>/play judul lagu</code> untuk mulai.", parse_mode=ParseMode.HTML)
+        err = await message.reply(
+            "🔇 Tidak ada lagu yang diputar. Ketik <code>/play judul lagu</code> untuk mulai.",
+            parse_mode=ParseMode.HTML,
+        )
         _schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
         return
 
@@ -838,8 +899,11 @@ async def cmd_now_playing(message: types.Message):
 @dp.message(Command("queue"), F.chat.type.in_({"group", "supergroup"}))
 async def cmd_music_queue(message: types.Message):
     chat_id = message.chat.id
-    st = _get_group_state(chat_id)
+    if not _is_group_allowed(chat_id):
+        await _reject_unauthorized_group(chat_id)
+        return
 
+    st = _get_group_state(chat_id)
     if not st.current_track and not st.queue:
         err = await message.reply("📭 Daftar antrean lagu kosong.")
         _schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
@@ -858,8 +922,11 @@ async def cmd_music_queue(message: types.Message):
 @dp.message(Command("skip"), F.chat.type.in_({"group", "supergroup"}))
 async def cmd_skip_song(message: types.Message):
     chat_id = message.chat.id
-    st = _get_group_state(chat_id)
+    if not _is_group_allowed(chat_id):
+        await _reject_unauthorized_group(chat_id)
+        return
 
+    st = _get_group_state(chat_id)
     if not st.current_track:
         err = await message.reply("Tidak ada lagu yang sedang diputar.")
         _schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
@@ -883,6 +950,10 @@ async def cmd_skip_song(message: types.Message):
 @dp.message(Command("pause"), F.chat.type.in_({"group", "supergroup"}))
 async def cmd_pause_song(message: types.Message):
     chat_id = message.chat.id
+    if not _is_group_allowed(chat_id):
+        await _reject_unauthorized_group(chat_id)
+        return
+
     st = _get_group_state(chat_id)
     if not st.current_track or st.is_paused:
         return
@@ -899,6 +970,10 @@ async def cmd_pause_song(message: types.Message):
 @dp.message(Command("resume"), F.chat.type.in_({"group", "supergroup"}))
 async def cmd_resume_song(message: types.Message):
     chat_id = message.chat.id
+    if not _is_group_allowed(chat_id):
+        await _reject_unauthorized_group(chat_id)
+        return
+
     st = _get_group_state(chat_id)
     if not st.current_track or not st.is_paused:
         return
@@ -915,8 +990,11 @@ async def cmd_resume_song(message: types.Message):
 @dp.message(Command("stop"), F.chat.type.in_({"group", "supergroup"}))
 async def cmd_stop_music(message: types.Message):
     chat_id = message.chat.id
-    st = _get_group_state(chat_id)
+    if not _is_group_allowed(chat_id):
+        await _reject_unauthorized_group(chat_id)
+        return
 
+    st = _get_group_state(chat_id)
     uid = message.from_user.id
     if uid != OWNER_ID:
         member = await bot.get_chat_member(chat_id, uid)
@@ -974,9 +1052,10 @@ async def main():
     _assistant_user_id = me.id
     await call_py.start()
     logger.info(
-        "Akun Asisten Multi-Group (@%s / %s) & PyTgCalls aktif! MUSIC_VAULT_ID: %s",
+        "Akun Asisten Multi-Group (@%s / %s) aktif! ALLOWED_GROUPS: %s | MUSIC_VAULT_ID: %s",
         me.username or me.first_name,
         me.id,
+        sorted(ALLOWED_GROUPS) if ALLOWED_GROUPS else "KOSONG (Semua grup diblokir)",
         MUSIC_VAULT_ID,
     )
 
