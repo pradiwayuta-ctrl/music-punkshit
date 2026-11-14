@@ -8,10 +8,11 @@ import logging
 import urllib.parse
 import urllib.request
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from pyrogram import Client
+from pyrogram.errors import UserAlreadyParticipant
 from pyrogram.raw import functions, types as raw_types
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream, AudioQuality
@@ -23,14 +24,13 @@ from aiogram.types import BotCommand, BotCommandScopeAllGroupChats, ReactionType
 from aiogram.enums import ParseMode
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("kaelen_dj")
+logger = logging.getLogger("kaelen_dj_multigroup")
 
 # --- KONFIGURASI ENVIRONMENT VARIABLES ---
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
 SESSION_STRING = os.environ["SESSION_STRING"]
-GROUP_ID = int(os.environ["GROUP_ID"])
 OWNER_ID = int(os.environ["OWNER_ID"])
 
 
@@ -54,8 +54,9 @@ dp = Dispatcher(storage=MemoryStorage())
 
 assistant: Client | None = None
 call_py: PyTgCalls | None = None
-_play_lock: asyncio.Lock | None = None
 _tg_bot_lock: asyncio.Lock | None = None
+_bg_tasks: set[asyncio.Task] = set()
+_assistant_user_id: int = 0
 
 
 @dataclass
@@ -70,14 +71,29 @@ class TrackItem:
     source_label: str = "Music Vault"
 
 
-music_queue: deque[TrackItem] = deque()
-current_track: TrackItem | None = None
-is_paused: bool = False
-_idle_since: float | None = None
-_bg_tasks: set[asyncio.Task] = set()
-_assistant_user_id: int = 0
-_privileged_cache: set[int] = {OWNER_ID}
-_privileged_cache_ts: float = 0.0
+@dataclass
+class GroupState:
+    chat_id: int
+    queue: deque[TrackItem] = field(default_factory=deque)
+    current_track: TrackItem | None = None
+    is_paused: bool = False
+    idle_since: float | None = None
+    play_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    privileged_cache: set[int] = field(default_factory=lambda: {OWNER_ID})
+    privileged_cache_ts: float = 0.0
+    call_id: int | None = None
+
+
+_groups: dict[int, GroupState] = {}
+_call_id_to_chat: dict[int, int] = {}
+
+
+def _get_group_state(chat_id: int) -> GroupState:
+    st = _groups.get(chat_id)
+    if st is None:
+        st = GroupState(chat_id=chat_id)
+        _groups[chat_id] = st
+    return st
 
 
 def _spawn_task(coro) -> asyncio.Task:
@@ -100,14 +116,14 @@ def _format_duration(seconds: int | float | None) -> str:
     return f"{hrs}:{mins:02d}:{rem:02d}" if hrs else f"{mins}:{rem:02d}"
 
 
-def _is_actively_playing_in_os() -> bool:
-    """Cek status riil PyTgCalls agar current_track tidak pernah nyangkut."""
-    if not call_py or current_track is None:
+def _is_actively_playing_in_os(chat_id: int) -> bool:
+    st = _get_group_state(chat_id)
+    if not call_py or st.current_track is None:
         return False
     try:
         active_calls = getattr(call_py, "calls", None)
         if isinstance(active_calls, dict):
-            return GROUP_ID in active_calls
+            return chat_id in active_calls
     except Exception:
         pass
     return True
@@ -115,9 +131,20 @@ def _is_actively_playing_in_os() -> bool:
 
 def _cleanup_old_cache(keep_path: str | None = None):
     try:
+        active_paths = {
+            os.path.abspath(st.current_track.stream_url)
+            for st in _groups.values()
+            if st.current_track and os.path.exists(st.current_track.stream_url)
+        }
+        for st in _groups.values():
+            for t in st.queue:
+                if os.path.exists(t.stream_url):
+                    active_paths.add(os.path.abspath(t.stream_url))
+
         files = sorted(glob.glob(os.path.join(CACHE_DIR, "*")), key=os.path.getmtime)
-        for f in files[:-3]:
-            if keep_path and os.path.abspath(f) == os.path.abspath(keep_path):
+        for f in files[:-5]:
+            abs_f = os.path.abspath(f)
+            if (keep_path and abs_f == os.path.abspath(keep_path)) or abs_f in active_paths:
                 continue
             try:
                 os.remove(f)
@@ -184,35 +211,64 @@ def _schedule_delete(chat_id: int, message_ids: list[int], delay: int = AUTO_DEL
     _spawn_task(_worker())
 
 
-async def _send_kaelen_msg(text: str, thread_id: int | None = None, auto_delete: int = AUTO_DELETE_DELAY):
+async def _send_group_msg(
+    chat_id: int,
+    text: str,
+    thread_id: int | None = None,
+    auto_delete: int = AUTO_DELETE_DELAY,
+):
     clean_tid = thread_id if (thread_id and thread_id != 1) else None
     attempts = [clean_tid, None] if clean_tid else [None]
     for tid in attempts:
         kwargs = {"message_thread_id": tid} if tid else {}
         try:
             sent = await bot.send_message(
-                chat_id=GROUP_ID,
+                chat_id=chat_id,
                 text=text,
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
                 **kwargs,
             )
             if sent and auto_delete > 0:
-                _schedule_delete(GROUP_ID, [sent.message_id], delay=auto_delete)
+                _schedule_delete(chat_id, [sent.message_id], delay=auto_delete)
             return sent
         except Exception as e:
             if tid and "thread not found" in str(e).lower():
                 continue
-            logger.warning("Gagal kirim pesan Kaelen: %s", e)
+            logger.warning("Gagal kirim pesan ke grup %s: %s", chat_id, e)
             return None
 
 
-# --- STRICT LISTEN-ONLY OS (HANYA OWNER, ADMIN & ASISTEN YANG BISA BICARA/UNMUTE) ---
-async def _get_privileged_os_user_ids(force_refresh: bool = False) -> set[int]:
-    global _privileged_cache, _privileged_cache_ts
+# --- AUTO-JOIN AKUN ASISTEN KE GRUP ---
+async def _ensure_assistant_in_group(chat_id: int) -> bool:
+    try:
+        await assistant.get_chat_member(chat_id, _assistant_user_id)
+        return True
+    except Exception:
+        pass
+
+    try:
+        invite = await bot.create_chat_invite_link(chat_id=chat_id, member_limit=1)
+        await assistant.join_chat(invite.invite_link)
+        try:
+            await bot.revoke_chat_invite_link(chat_id=chat_id, invite_link=invite.invite_link)
+        except Exception:
+            pass
+        await asyncio.sleep(1.0)
+        return True
+    except UserAlreadyParticipant:
+        return True
+    except Exception as e:
+        logger.warning("Asisten gagal auto-join grup %s: %s", chat_id, e)
+        return False
+
+
+# --- STRICT LISTEN-ONLY OS PER GRUP ---
+async def _get_privileged_os_user_ids(chat_id: int, force_refresh: bool = False) -> set[int]:
+    st = _get_group_state(chat_id)
     now = time.monotonic()
-    if not force_refresh and (now - _privileged_cache_ts) < 60.0 and _privileged_cache:
-        priv = set(_privileged_cache)
+    if not force_refresh and (now - st.privileged_cache_ts) < 60.0 and st.privileged_cache:
+        priv = set(st.privileged_cache)
         priv.add(OWNER_ID)
         if _assistant_user_id:
             priv.add(_assistant_user_id)
@@ -222,23 +278,23 @@ async def _get_privileged_os_user_ids(force_refresh: bool = False) -> set[int]:
     if _assistant_user_id:
         priv.add(_assistant_user_id)
     try:
-        admins = await bot.get_chat_administrators(GROUP_ID)
+        admins = await bot.get_chat_administrators(chat_id)
         for m in admins:
             if getattr(m, "user", None) and m.user.id:
                 priv.add(int(m.user.id))
-        _privileged_cache = priv
-        _privileged_cache_ts = now
+        st.privileged_cache = priv
+        st.privileged_cache_ts = now
     except Exception as e:
-        logger.debug("Gagal memuat daftar admin grup: %s", e)
-        priv.update(_privileged_cache)
+        logger.debug("Gagal memuat daftar admin grup %s: %s", chat_id, e)
+        priv.update(st.privileged_cache)
     return priv
 
 
-async def _mute_all_non_admins(call):
+async def _mute_all_non_admins(chat_id: int, call):
     if not call:
         return
     try:
-        privileged_ids = await _get_privileged_os_user_ids()
+        privileged_ids = await _get_privileged_os_user_ids(chat_id)
         res = await assistant.invoke(
             functions.phone.GetGroupParticipants(
                 call=call,
@@ -252,7 +308,11 @@ async def _mute_all_non_admins(call):
             peer_uid = getattr(getattr(p, "peer", None), "user_id", None)
             if not peer_uid or peer_uid in privileged_ids:
                 continue
-            if not getattr(p, "muted", True) or getattr(p, "can_self_unmute", False) or getattr(p, "raise_hand_rating", None) is not None:
+            if (
+                not getattr(p, "muted", True)
+                or getattr(p, "can_self_unmute", False)
+                or getattr(p, "raise_hand_rating", None) is not None
+            ):
                 target_peer = await assistant.resolve_peer(peer_uid)
                 await assistant.invoke(
                     functions.phone.EditGroupCallParticipant(
@@ -263,57 +323,67 @@ async def _mute_all_non_admins(call):
                     )
                 )
     except Exception as e:
-        logger.debug("Mute sweep skip: %s", e)
+        logger.debug("Mute sweep skip (%s): %s", chat_id, e)
 
 
-async def _close_voice_chat_if_idle(call) -> bool:
-    """Tutup OS secara otomatis jika tidak ada lagu diputar selama OS_IDLE_TIMEOUT detik."""
-    global _idle_since
+async def _close_voice_chat_if_idle(chat_id: int, call) -> bool:
+    st = _get_group_state(chat_id)
     if not call:
-        _idle_since = None
+        st.idle_since = None
         return False
 
-    if current_track is not None or music_queue:
-        _idle_since = None
+    if st.current_track is not None or st.queue:
+        st.idle_since = None
         return False
 
     now = time.monotonic()
-    if _idle_since is None:
-        _idle_since = now
+    if st.idle_since is None:
+        st.idle_since = now
         return False
 
-    if (now - _idle_since) < OS_IDLE_TIMEOUT:
+    if (now - st.idle_since) < OS_IDLE_TIMEOUT:
         return False
 
     try:
         try:
-            await call_py.leave_call(GROUP_ID)
+            await call_py.leave_call(chat_id)
         except Exception:
             pass
         await assistant.invoke(functions.phone.DiscardGroupCall(call=call))
-        _idle_since = None
-        logger.info("OS ditutup otomatis karena idle selama %s detik.", OS_IDLE_TIMEOUT)
-        await _send_kaelen_msg(
+        st.idle_since = None
+        if st.call_id:
+            _call_id_to_chat.pop(st.call_id, None)
+            st.call_id = None
+        logger.info("OS di grup %s ditutup otomatis karena idle.", chat_id)
+        await _send_group_msg(
+            chat_id,
             "🕯️ <i>Tidak ada lagu yang diputar selama 5 menit — Obrolan Suara ditutup otomatis.</i>",
             auto_delete=30,
         )
         return True
     except Exception as e:
-        logger.warning("Gagal menutup OS otomatis saat idle: %s", e)
+        logger.warning("Gagal menutup OS idle di grup %s: %s", chat_id, e)
         return False
 
 
 async def _periodic_os_mute_enforcer():
-    """Background task: setiap 10 detik pastikan peserta non-admin muted & tutup OS jika idle 5 menit."""
+    """Sweep seluruh grup aktif setiap 10 detik untuk mute non-admin & tutup OS idle."""
     await asyncio.sleep(5)
     while True:
-        try:
-            if assistant:
-                peer = await assistant.resolve_peer(GROUP_ID)
+        for chat_id, st in list(_groups.items()):
+            try:
+                if not assistant:
+                    continue
+                peer = await assistant.resolve_peer(chat_id)
                 full = await assistant.invoke(functions.channels.GetFullChannel(channel=peer))
                 call = getattr(full.full_chat, "call", None)
                 if call:
-                    closed = await _close_voice_chat_if_idle(call)
+                    cid = getattr(call, "id", None)
+                    if cid:
+                        st.call_id = cid
+                        _call_id_to_chat[cid] = chat_id
+
+                    closed = await _close_voice_chat_if_idle(chat_id, call)
                     if not closed:
                         try:
                             await assistant.invoke(
@@ -324,23 +394,31 @@ async def _periodic_os_mute_enforcer():
                             )
                         except Exception:
                             pass
-                        await _mute_all_non_admins(call)
+                        await _mute_all_non_admins(chat_id, call)
                 else:
-                    _idle_since = None
-        except Exception as e:
-            logger.debug("Periodic OS sweep error: %s", e)
+                    st.idle_since = None
+                    if st.call_id:
+                        _call_id_to_chat.pop(st.call_id, None)
+                        st.call_id = None
+            except Exception as e:
+                logger.debug("Periodic OS sweep error (%s): %s", chat_id, e)
 
         await asyncio.sleep(OS_MUTE_SWEEP_INTERVAL)
 
 
-async def _ensure_voice_chat_open_and_muted():
+async def _ensure_voice_chat_open_and_muted(chat_id: int):
+    st = _get_group_state(chat_id)
     try:
-        peer = await assistant.resolve_peer(GROUP_ID)
+        joined = await _ensure_assistant_in_group(chat_id)
+        if not joined:
+            return None
+
+        peer = await assistant.resolve_peer(chat_id)
         full = await assistant.invoke(functions.channels.GetFullChannel(channel=peer))
         call = getattr(full.full_chat, "call", None)
 
         if not call:
-            logger.info("OS belum terbuka. Akun asisten membuka Obrolan Suara...")
+            logger.info("OS belum terbuka di grup %s. Membuka Obrolan Suara...", chat_id)
             await assistant.invoke(
                 functions.phone.CreateGroupCall(
                     peer=peer,
@@ -353,6 +431,10 @@ async def _ensure_voice_chat_open_and_muted():
             call = getattr(full.full_chat, "call", None)
 
         if call:
+            cid = getattr(call, "id", None)
+            if cid:
+                st.call_id = cid
+                _call_id_to_chat[cid] = chat_id
             try:
                 await assistant.invoke(
                     functions.phone.ToggleGroupCallSettings(
@@ -362,10 +444,10 @@ async def _ensure_voice_chat_open_and_muted():
                 )
             except Exception:
                 pass
-            await _mute_all_non_admins(call)
+            await _mute_all_non_admins(chat_id, call)
         return call
     except Exception as e:
-        logger.error("Gagal membuka/mengatur OS: %s", e)
+        logger.error("Gagal membuka/mengatur OS di grup %s: %s", chat_id, e)
         return None
 
 
@@ -389,7 +471,12 @@ async def _enforce_os_listener_mute(client: Client, update, users, chats):
     if not isinstance(update, raw_types.UpdateGroupCallParticipants):
         return
     try:
-        privileged_ids = await _get_privileged_os_user_ids()
+        call_id = getattr(update.call, "id", None)
+        chat_id = _call_id_to_chat.get(call_id)
+        if not chat_id:
+            return
+
+        privileged_ids = await _get_privileged_os_user_ids(chat_id)
         for p in update.participants:
             peer_uid = getattr(getattr(p, "peer", None), "user_id", None)
             if not peer_uid or peer_uid in privileged_ids:
@@ -414,7 +501,7 @@ async def _enforce_os_listener_mute(client: Client, update, users, chats):
         pass
 
 
-# --- JALUR 1: MUSIC_VAULT_ID (GUDANG CHANNEL MUSIK) ---
+# --- JALUR 1: MUSIC_VAULT_ID ---
 async def _search_music_vault(query: str) -> dict | None:
     if not MUSIC_VAULT_ID:
         return None
@@ -574,42 +661,45 @@ async def resolve_audio_track(query: str) -> dict | None:
     return await loop.run_in_executor(None, _search_jiosaavn_sync, query)
 
 
-async def _play_next_in_queue():
-    global current_track, is_paused, _idle_since
-    async with _play_lock:
-        if not music_queue:
-            current_track = None
-            is_paused = False
-            _idle_since = time.monotonic()
+async def _play_next_in_queue(chat_id: int):
+    st = _get_group_state(chat_id)
+    async with st.play_lock:
+        if not st.queue:
+            st.current_track = None
+            st.is_paused = False
+            st.idle_since = time.monotonic()
             try:
-                await call_py.leave_call(GROUP_ID)
+                await call_py.leave_call(chat_id)
             except Exception:
                 pass
             return
 
-        next_track = music_queue.popleft()
-        current_track = next_track
-        is_paused = False
-        _idle_since = None
+        next_track = st.queue.popleft()
+        st.current_track = next_track
+        st.is_paused = False
+        st.idle_since = None
 
         try:
-            call = await _ensure_voice_chat_open_and_muted()
+            call = await _ensure_voice_chat_open_and_muted(chat_id)
+            if not call:
+                raise RuntimeError("Pastikan Akun Asisten sudah jadi Admin dengan izin Manage Voice Chats.")
 
             stream = MediaStream(
                 next_track.stream_url,
                 audio_parameters=AudioQuality.HIGH,
                 video_flags=MediaStream.Flags.IGNORE,
             )
-            await call_py.play(GROUP_ID, stream)
+            await call_py.play(chat_id, stream)
             await _unmute_assistant_in_call(call)
-            await _mute_all_non_admins(call)
+            await _mute_all_non_admins(chat_id, call)
 
             link_part = (
                 f'<a href="{html.escape(next_track.webpage_url)}">{html.escape(next_track.title)}</a>'
                 if next_track.webpage_url
                 else f"<b>{html.escape(next_track.title)}</b>"
             )
-            await _send_kaelen_msg(
+            await _send_group_msg(
+                chat_id,
                 f"🎧 <b>Now Playing</b> (📀 {html.escape(next_track.source_label)})\n"
                 f"• Lagu: {link_part} (<code>{next_track.duration}</code>)\n"
                 f"• Permintaan: {_mention(next_track.requester_id, next_track.requester_name)}",
@@ -617,37 +707,42 @@ async def _play_next_in_queue():
                 auto_delete=55,
             )
         except Exception as e:
-            logger.error("PyTgCalls play error: %s", e)
-            await _send_kaelen_msg(
+            logger.error("PyTgCalls play error di grup %s: %s", chat_id, e)
+            await _send_group_msg(
+                chat_id,
                 f"⚠️ Gagal memutar <b>{html.escape(next_track.title)}</b> di OS.\n"
                 f"<i>({html.escape(str(e))})</i>",
                 thread_id=next_track.thread_id,
                 auto_delete=30,
             )
-            current_track = None
-            _idle_since = time.monotonic()
-            if music_queue:
-                _spawn_task(_play_next_in_queue())
+            st.current_track = None
+            st.idle_since = time.monotonic()
+            if st.queue:
+                _spawn_task(_play_next_in_queue(chat_id))
 
 
 async def on_tgcalls_update(_, update):
     update_name = type(update).__name__
     if "StreamEnded" in update_name or "StreamAudioEnded" in update_name:
-        await _play_next_in_queue()
+        chat_id = getattr(update, "chat_id", None)
+        if chat_id:
+            await _play_next_in_queue(int(chat_id))
 
 
 async def enqueue_song_request(
+    chat_id: int,
     query: str,
     uid: int,
     requester_name: str,
     thread_id: int | None = None,
     announce_queue: bool = True,
 ) -> bool:
-    global current_track, is_paused, _idle_since
+    st = _get_group_state(chat_id)
 
     info = await resolve_audio_track(query)
     if not info:
-        await _send_kaelen_msg(
+        await _send_group_msg(
+            chat_id,
             f"🥀 Lagu tidak ditemukan untuk <b>{html.escape(query)}</b>.",
             thread_id=thread_id,
             auto_delete=25,
@@ -665,18 +760,19 @@ async def enqueue_song_request(
         source_label=info.get("source_label", "Music Vault"),
     )
 
-    if current_track is not None and not _is_actively_playing_in_os():
-        current_track = None
-        is_paused = False
+    if st.current_track is not None and not _is_actively_playing_in_os(chat_id):
+        st.current_track = None
+        st.is_paused = False
 
-    _idle_since = None
-    music_queue.append(track)
+    st.idle_since = None
+    st.queue.append(track)
 
-    if current_track is None:
-        await _play_next_in_queue()
+    if st.current_track is None:
+        await _play_next_in_queue(chat_id)
     elif announce_queue:
-        pos = len(music_queue)
-        await _send_kaelen_msg(
+        pos = len(st.queue)
+        await _send_group_msg(
+            chat_id,
             f"💿 <b>Ditambahkan ke Antrean (#{pos})</b>\n"
             f"• Lagu: <b>{html.escape(track.title)}</b> (<code>{track.duration}</code>)\n"
             f"• Oleh: {_mention(uid, requester_name)}",
@@ -689,9 +785,7 @@ async def enqueue_song_request(
 # --- COMMAND HANDLERS ---
 @dp.message(Command("play", "reqsong"), F.chat.type.in_({"group", "supergroup"}))
 async def cmd_play_song(message: types.Message):
-    if message.chat.id != GROUP_ID:
-        return
-
+    chat_id = message.chat.id
     user = message.from_user
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
@@ -699,148 +793,150 @@ async def cmd_play_song(message: types.Message):
             "🎶 Format: <code>/play Judul Lagu - Penyanyi</code>",
             parse_mode=ParseMode.HTML,
         )
-        _schedule_delete(message.chat.id, [message.message_id, err.message_id], delay=20)
+        _schedule_delete(chat_id, [message.message_id, err.message_id], delay=20)
         return
 
     query = parts[1].strip()[:120]
 
-    await react_msg(message.chat.id, message.message_id, "🎶")
+    await react_msg(chat_id, message.message_id, "🎶")
     search_msg = await message.reply(
         f"🔎 <i>Mencari lagu <b>{html.escape(query)}</b>...</i>",
         parse_mode=ParseMode.HTML,
     )
 
     ok = await enqueue_song_request(
+        chat_id=chat_id,
         query=query,
         uid=user.id,
         requester_name=user.first_name,
         thread_id=message.message_thread_id,
     )
-    _schedule_delete(message.chat.id, [message.message_id, search_msg.message_id], delay=5 if ok else 15)
+    _schedule_delete(chat_id, [message.message_id, search_msg.message_id], delay=5 if ok else 15)
 
 
 @dp.message(Command("np", "nowplaying"), F.chat.type.in_({"group", "supergroup"}))
 async def cmd_now_playing(message: types.Message):
-    if message.chat.id != GROUP_ID:
-        return
+    chat_id = message.chat.id
+    st = _get_group_state(chat_id)
 
-    if not current_track:
+    if not st.current_track:
         err = await message.reply("🔇 Tidak ada lagu yang diputar. Ketik <code>/play judul lagu</code> untuk mulai.", parse_mode=ParseMode.HTML)
-        _schedule_delete(message.chat.id, [message.message_id, err.message_id], delay=15)
+        _schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
         return
 
-    state = "⏸ Dijeda" if is_paused else "▶️ Sedang Diputar"
+    state = "⏸ Dijeda" if st.is_paused else "▶️ Sedang Diputar"
     msg = await message.reply(
         f"🎧 <b>{state}</b>\n"
-        f"• Lagu: <b>{html.escape(current_track.title)}</b> (<code>{current_track.duration}</code>)\n"
-        f"• Request oleh: {_mention(current_track.requester_id, current_track.requester_name)}\n"
-        f"• Antrean berikutnya: <b>{len(music_queue)}</b> lagu",
+        f"• Lagu: <b>{html.escape(st.current_track.title)}</b> (<code>{st.current_track.duration}</code>)\n"
+        f"• Request oleh: {_mention(st.current_track.requester_id, st.current_track.requester_name)}\n"
+        f"• Antrean berikutnya: <b>{len(st.queue)}</b> lagu",
         parse_mode=ParseMode.HTML,
     )
-    _schedule_delete(message.chat.id, [message.message_id, msg.message_id], delay=35)
+    _schedule_delete(chat_id, [message.message_id, msg.message_id], delay=35)
 
 
 @dp.message(Command("queue"), F.chat.type.in_({"group", "supergroup"}))
 async def cmd_music_queue(message: types.Message):
-    if message.chat.id != GROUP_ID:
-        return
+    chat_id = message.chat.id
+    st = _get_group_state(chat_id)
 
-    if not current_track and not music_queue:
+    if not st.current_track and not st.queue:
         err = await message.reply("📭 Daftar antrean lagu kosong.")
-        _schedule_delete(message.chat.id, [message.message_id, err.message_id], delay=15)
+        _schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
         return
 
     lines = []
-    if current_track:
-        lines.append(f"▶️ <b>Sekarang:</b> {html.escape(current_track.title)} ({html.escape(current_track.requester_name)})")
-    for idx, t in enumerate(list(music_queue)[:10], start=1):
+    if st.current_track:
+        lines.append(f"▶️ <b>Sekarang:</b> {html.escape(st.current_track.title)} ({html.escape(st.current_track.requester_name)})")
+    for idx, t in enumerate(list(st.queue)[:10], start=1):
         lines.append(f"{idx}. {html.escape(t.title)} — <i>{html.escape(t.requester_name)}</i>")
 
     msg = await message.reply("🎶 <b>Daftar Antrean Lagu</b>\n\n" + "\n".join(lines), parse_mode=ParseMode.HTML)
-    _schedule_delete(message.chat.id, [message.message_id, msg.message_id], delay=40)
+    _schedule_delete(chat_id, [message.message_id, msg.message_id], delay=40)
 
 
 @dp.message(Command("skip"), F.chat.type.in_({"group", "supergroup"}))
 async def cmd_skip_song(message: types.Message):
-    if message.chat.id != GROUP_ID:
-        return
+    chat_id = message.chat.id
+    st = _get_group_state(chat_id)
 
-    if not current_track:
+    if not st.current_track:
         err = await message.reply("Tidak ada lagu yang sedang diputar.")
-        _schedule_delete(message.chat.id, [message.message_id, err.message_id], delay=15)
+        _schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
         return
 
     uid = message.from_user.id
-    if uid != OWNER_ID and uid != current_track.requester_id:
-        member = await bot.get_chat_member(message.chat.id, uid)
+    if uid != OWNER_ID and uid != st.current_track.requester_id:
+        member = await bot.get_chat_member(chat_id, uid)
         if member.status not in ("administrator", "creator"):
             err = await message.reply("Hanya pemesan lagu ini atau Admin yang bisa melewati lagu.")
-            _schedule_delete(message.chat.id, [message.message_id, err.message_id], delay=15)
+            _schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
             return
 
-    skipped_title = current_track.title
-    await react_msg(message.chat.id, message.message_id, "⏭️")
+    skipped_title = st.current_track.title
+    await react_msg(chat_id, message.message_id, "⏭️")
     msg = await message.reply(f"⏭️ Melewati lagu <b>{html.escape(skipped_title)}</b>.", parse_mode=ParseMode.HTML)
-    _schedule_delete(message.chat.id, [message.message_id, msg.message_id], delay=20)
-    await _play_next_in_queue()
+    _schedule_delete(chat_id, [message.message_id, msg.message_id], delay=20)
+    await _play_next_in_queue(chat_id)
 
 
 @dp.message(Command("pause"), F.chat.type.in_({"group", "supergroup"}))
 async def cmd_pause_song(message: types.Message):
-    global is_paused
-    if message.chat.id != GROUP_ID or not current_track or is_paused:
+    chat_id = message.chat.id
+    st = _get_group_state(chat_id)
+    if not st.current_track or st.is_paused:
         return
     try:
-        await call_py.pause(GROUP_ID)
-        is_paused = True
+        await call_py.pause(chat_id)
+        st.is_paused = True
         msg = await message.reply("⏸️ Musik dijeda.")
-        _schedule_delete(message.chat.id, [message.message_id, msg.message_id], delay=20)
+        _schedule_delete(chat_id, [message.message_id, msg.message_id], delay=20)
     except Exception as e:
         err = await message.reply(f"Gagal menjeda: {e}")
-        _schedule_delete(message.chat.id, [message.message_id, err.message_id], delay=15)
+        _schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
 
 
 @dp.message(Command("resume"), F.chat.type.in_({"group", "supergroup"}))
 async def cmd_resume_song(message: types.Message):
-    global is_paused
-    if message.chat.id != GROUP_ID or not current_track or not is_paused:
+    chat_id = message.chat.id
+    st = _get_group_state(chat_id)
+    if not st.current_track or not st.is_paused:
         return
     try:
-        await call_py.resume(GROUP_ID)
-        is_paused = False
+        await call_py.resume(chat_id)
+        st.is_paused = False
         msg = await message.reply("▶️ Musik dilanjutkan.")
-        _schedule_delete(message.chat.id, [message.message_id, msg.message_id], delay=20)
+        _schedule_delete(chat_id, [message.message_id, msg.message_id], delay=20)
     except Exception as e:
         err = await message.reply(f"Gagal melanjutkan: {e}")
-        _schedule_delete(message.chat.id, [message.message_id, err.message_id], delay=15)
+        _schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
 
 
 @dp.message(Command("stop"), F.chat.type.in_({"group", "supergroup"}))
 async def cmd_stop_music(message: types.Message):
-    global current_track, is_paused, _idle_since
-    if message.chat.id != GROUP_ID:
-        return
+    chat_id = message.chat.id
+    st = _get_group_state(chat_id)
 
     uid = message.from_user.id
     if uid != OWNER_ID:
-        member = await bot.get_chat_member(message.chat.id, uid)
+        member = await bot.get_chat_member(chat_id, uid)
         if member.status not in ("administrator", "creator"):
             err = await message.reply("Perintah <code>/stop</code> hanya untuk Admin atau Owner.", parse_mode=ParseMode.HTML)
-            _schedule_delete(message.chat.id, [message.message_id, err.message_id], delay=15)
+            _schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
             return
 
-    music_queue.clear()
-    current_track = None
-    is_paused = False
-    _idle_since = time.monotonic()
+    st.queue.clear()
+    st.current_track = None
+    st.is_paused = False
+    st.idle_since = time.monotonic()
 
     try:
-        await call_py.leave_call(GROUP_ID)
+        await call_py.leave_call(chat_id)
     except Exception:
         pass
 
     msg = await message.reply("⏹️ Musik dihentikan dan antrean dikosongkan.")
-    _schedule_delete(message.chat.id, [message.message_id, msg.message_id], delay=25)
+    _schedule_delete(chat_id, [message.message_id, msg.message_id], delay=25)
 
 
 async def register_commands():
@@ -857,12 +953,9 @@ async def register_commands():
 
 
 async def main():
-    global assistant, call_py, _play_lock, _tg_bot_lock, _assistant_user_id, _idle_since
+    global assistant, call_py, _tg_bot_lock, _assistant_user_id
 
-    _play_lock = asyncio.Lock()
     _tg_bot_lock = asyncio.Lock()
-    _idle_since = time.monotonic()
-
     await register_commands()
 
     assistant = Client(
@@ -879,10 +972,9 @@ async def main():
     await assistant.start()
     me = await assistant.get_me()
     _assistant_user_id = me.id
-    await _get_privileged_os_user_ids(force_refresh=True)
     await call_py.start()
     logger.info(
-        "Akun Asisten (@%s / %s) & PyTgCalls aktif! MUSIC_VAULT_ID: %s",
+        "Akun Asisten Multi-Group (@%s / %s) & PyTgCalls aktif! MUSIC_VAULT_ID: %s",
         me.username or me.first_name,
         me.id,
         MUSIC_VAULT_ID,
