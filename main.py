@@ -23,7 +23,10 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     BotCommand,
     BotCommandScopeAllGroupChats,
+    CallbackQuery,
     ChatMemberUpdated,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     ReactionTypeEmoji,
 )
 from aiogram.enums import ParseMode
@@ -98,6 +101,7 @@ class GroupState:
     privileged_cache: set[int] = field(default_factory=lambda: {OWNER_ID})
     privileged_cache_ts: float = 0.0
     call_id: int | None = None
+    now_playing_msg_id: int | None = None
 
 
 _groups: dict[int, GroupState] = {}
@@ -149,6 +153,44 @@ def _format_duration(seconds: int | float | None) -> str:
     mins, rem = divmod(sec, 60)
     hrs, mins = divmod(mins, 60)
     return f"{hrs}:{mins:02d}:{rem:02d}" if hrs else f"{mins}:{rem:02d}"
+
+
+def _build_player_keyboard(is_paused: bool) -> InlineKeyboardMarkup:
+    toggle_btn = (
+        InlineKeyboardButton(text="▶️ Resume", callback_data="dj:resume")
+        if is_paused
+        else InlineKeyboardButton(text="⏸ Pause", callback_data="dj:pause")
+    )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                toggle_btn,
+                InlineKeyboardButton(text="⏭ Skip", callback_data="dj:skip"),
+                InlineKeyboardButton(text="⏹ Stop", callback_data="dj:stop"),
+            ],
+            [
+                InlineKeyboardButton(text="📜 Lihat Antrean", callback_data="dj:queue"),
+            ],
+        ]
+    )
+
+
+def _format_now_playing_text(st: GroupState) -> str:
+    track = st.current_track
+    if not track:
+        return "🔇 Tidak ada lagu yang sedang diputar."
+    state_label = "⏸ Dijeda" if st.is_paused else "▶️ Sedang Diputar"
+    link_part = (
+        f'<a href="{html.escape(track.webpage_url)}">{html.escape(track.title)}</a>'
+        if track.webpage_url
+        else f"<b>{html.escape(track.title)}</b>"
+    )
+    return (
+        f"🎧 <b>Now Playing — {state_label}</b> (📀 {html.escape(track.source_label)})\n"
+        f"• Lagu: {link_part} (<code>{track.duration}</code>)\n"
+        f"• Permintaan: {_mention(track.requester_id, track.requester_name)}\n"
+        f"• Antrean berikutnya: <b>{len(st.queue)}</b> lagu"
+    )
 
 
 def _is_actively_playing_in_os(chat_id: int) -> bool:
@@ -251,6 +293,7 @@ async def _send_group_msg(
     text: str,
     thread_id: int | None = None,
     auto_delete: int = AUTO_DELETE_DELAY,
+    reply_markup: InlineKeyboardMarkup | None = None,
 ):
     clean_tid = thread_id if (thread_id and thread_id != 1) else None
     attempts = [clean_tid, None] if clean_tid else [None]
@@ -262,6 +305,7 @@ async def _send_group_msg(
                 text=text,
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
+                reply_markup=reply_markup,
                 **kwargs,
             )
             if sent and auto_delete > 0:
@@ -326,6 +370,16 @@ async def _get_privileged_os_user_ids(chat_id: int, force_refresh: bool = False)
         logger.debug("Gagal memuat daftar admin grup %s: %s", chat_id, e)
         priv.update(st.privileged_cache)
     return priv
+
+
+async def _is_user_admin_or_owner(chat_id: int, uid: int) -> bool:
+    if uid == OWNER_ID:
+        return True
+    try:
+        member = await bot.get_chat_member(chat_id, uid)
+        return member.status in ("administrator", "creator")
+    except Exception:
+        return False
 
 
 async def _mute_all_non_admins(chat_id: int, call):
@@ -706,6 +760,13 @@ async def resolve_audio_track(query: str) -> dict | None:
 async def _play_next_in_queue(chat_id: int):
     st = _get_group_state(chat_id)
     async with st.play_lock:
+        if st.now_playing_msg_id:
+            try:
+                await bot.delete_message(chat_id, st.now_playing_msg_id)
+            except Exception:
+                pass
+            st.now_playing_msg_id = None
+
         if not st.queue:
             st.current_track = None
             st.is_paused = False
@@ -735,19 +796,15 @@ async def _play_next_in_queue(chat_id: int):
             await _unmute_assistant_in_call(call)
             await _mute_all_non_admins(chat_id, call)
 
-            link_part = (
-                f'<a href="{html.escape(next_track.webpage_url)}">{html.escape(next_track.title)}</a>'
-                if next_track.webpage_url
-                else f"<b>{html.escape(next_track.title)}</b>"
-            )
-            await _send_group_msg(
+            sent = await _send_group_msg(
                 chat_id,
-                f"🎧 <b>Now Playing</b> (📀 {html.escape(next_track.source_label)})\n"
-                f"• Lagu: {link_part} (<code>{next_track.duration}</code>)\n"
-                f"• Permintaan: {_mention(next_track.requester_id, next_track.requester_name)}",
+                _format_now_playing_text(st),
                 thread_id=next_track.thread_id,
-                auto_delete=55,
+                auto_delete=0,
+                reply_markup=_build_player_keyboard(is_paused=False),
             )
+            if sent:
+                st.now_playing_msg_id = sent.message_id
         except Exception as e:
             logger.error("PyTgCalls play error di grup %s: %s", chat_id, e)
             await _send_group_msg(
@@ -833,6 +890,121 @@ async def on_bot_added_to_group(event: ChatMemberUpdated):
         await _reject_unauthorized_group(chat_id)
 
 
+# --- CALLBACK HANDLER UNTUK TOMBOL INLINE PLAYER ---
+@dp.callback_query(F.data.startswith("dj:"))
+async def on_player_button_click(callback: CallbackQuery):
+    if not callback.message or callback.message.chat.type not in ("group", "supergroup"):
+        await callback.answer()
+        return
+
+    chat_id = callback.message.chat.id
+    if not _is_group_allowed(chat_id):
+        await callback.answer("⛔ Grup tidak terdaftar.", show_alert=True)
+        return
+
+    st = _get_group_state(chat_id)
+    uid = callback.from_user.id
+    action = callback.data.split(":", 1)[1]
+
+    if action == "queue":
+        if not st.current_track and not st.queue:
+            await callback.answer("📭 Daftar antrean kosong.", show_alert=True)
+            return
+        lines = []
+        if st.current_track:
+            lines.append(f"▶️ {st.current_track.title[:38]}")
+        for idx, t in enumerate(list(st.queue)[:6], start=1):
+            lines.append(f"{idx}. {t.title[:35]}")
+        if len(st.queue) > 6:
+            lines.append(f"... +{len(st.queue) - 6} lagu lainnya")
+        await callback.answer("\n".join(lines)[:200], show_alert=True)
+        return
+
+    if not st.current_track:
+        await callback.answer("🔇 Tidak ada lagu yang sedang diputar.", show_alert=True)
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        return
+
+    is_admin = await _is_user_admin_or_owner(chat_id, uid)
+    is_requester = uid == st.current_track.requester_id
+
+    if action == "stop":
+        if not is_admin:
+            await callback.answer("⛔ Hanya Admin atau Owner yang bisa menghentikan musik.", show_alert=True)
+            return
+        st.queue.clear()
+        st.current_track = None
+        st.is_paused = False
+        st.idle_since = time.monotonic()
+        st.now_playing_msg_id = None
+        try:
+            await call_py.leave_call(chat_id)
+        except Exception:
+            pass
+        await callback.answer("⏹️ Musik dihentikan.")
+        try:
+            await callback.message.edit_text(
+                f"⏹️ Musik dihentikan oleh {_mention(uid, callback.from_user.first_name)}.",
+                parse_mode=ParseMode.HTML,
+            )
+            _schedule_delete(chat_id, [callback.message.message_id], delay=15)
+        except Exception:
+            pass
+        return
+
+    if not (is_admin or is_requester):
+        await callback.answer("⛔ Hanya pemesan lagu atau Admin yang bisa memakai tombol ini.", show_alert=True)
+        return
+
+    if action == "pause":
+        if st.is_paused:
+            await callback.answer("Musik sudah dijeda.")
+            return
+        try:
+            await call_py.pause(chat_id)
+            st.is_paused = True
+            await callback.answer("⏸️ Musik dijeda.")
+            await callback.message.edit_text(
+                _format_now_playing_text(st),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+                reply_markup=_build_player_keyboard(is_paused=True),
+            )
+        except Exception as e:
+            await callback.answer(f"Gagal menjeda: {e}", show_alert=True)
+
+    elif action == "resume":
+        if not st.is_paused:
+            await callback.answer("Musik sedang diputar.")
+            return
+        try:
+            await call_py.resume(chat_id)
+            st.is_paused = False
+            await callback.answer("▶️ Musik dilanjutkan.")
+            await callback.message.edit_text(
+                _format_now_playing_text(st),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+                reply_markup=_build_player_keyboard(is_paused=False),
+            )
+        except Exception as e:
+            await callback.answer(f"Gagal melanjutkan: {e}", show_alert=True)
+
+    elif action == "skip":
+        skipped_title = st.current_track.title
+        await callback.answer(f"⏭️ Melewati: {skipped_title[:40]}")
+        await _send_group_msg(
+            chat_id,
+            f"⏭️ <b>{html.escape(skipped_title)}</b> dilewati oleh {_mention(uid, callback.from_user.first_name)}.",
+            thread_id=callback.message.message_thread_id,
+            auto_delete=20,
+        )
+        await _play_next_in_queue(chat_id)
+
+
 # --- COMMAND HANDLERS ---
 @dp.message(Command("play", "reqsong"), F.chat.type.in_({"group", "supergroup"}))
 async def cmd_play_song(message: types.Message):
@@ -885,15 +1057,20 @@ async def cmd_now_playing(message: types.Message):
         _schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
         return
 
-    state = "⏸ Dijeda" if st.is_paused else "▶️ Sedang Diputar"
+    if st.now_playing_msg_id:
+        try:
+            await bot.delete_message(chat_id, st.now_playing_msg_id)
+        except Exception:
+            pass
+
     msg = await message.reply(
-        f"🎧 <b>{state}</b>\n"
-        f"• Lagu: <b>{html.escape(st.current_track.title)}</b> (<code>{st.current_track.duration}</code>)\n"
-        f"• Request oleh: {_mention(st.current_track.requester_id, st.current_track.requester_name)}\n"
-        f"• Antrean berikutnya: <b>{len(st.queue)}</b> lagu",
+        _format_now_playing_text(st),
         parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+        reply_markup=_build_player_keyboard(is_paused=st.is_paused),
     )
-    _schedule_delete(chat_id, [message.message_id, msg.message_id], delay=35)
+    st.now_playing_msg_id = msg.message_id
+    _schedule_delete(chat_id, [message.message_id], delay=5)
 
 
 @dp.message(Command("queue"), F.chat.type.in_({"group", "supergroup"}))
@@ -933,12 +1110,10 @@ async def cmd_skip_song(message: types.Message):
         return
 
     uid = message.from_user.id
-    if uid != OWNER_ID and uid != st.current_track.requester_id:
-        member = await bot.get_chat_member(chat_id, uid)
-        if member.status not in ("administrator", "creator"):
-            err = await message.reply("Hanya pemesan lagu ini atau Admin yang bisa melewati lagu.")
-            _schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
-            return
+    if uid != st.current_track.requester_id and not await _is_user_admin_or_owner(chat_id, uid):
+        err = await message.reply("Hanya pemesan lagu ini atau Admin yang bisa melewati lagu.")
+        _schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
+        return
 
     skipped_title = st.current_track.title
     await react_msg(chat_id, message.message_id, "⏭️")
@@ -960,8 +1135,20 @@ async def cmd_pause_song(message: types.Message):
     try:
         await call_py.pause(chat_id)
         st.is_paused = True
+        if st.now_playing_msg_id:
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=st.now_playing_msg_id,
+                    text=_format_now_playing_text(st),
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                    reply_markup=_build_player_keyboard(is_paused=True),
+                )
+            except Exception:
+                pass
         msg = await message.reply("⏸️ Musik dijeda.")
-        _schedule_delete(chat_id, [message.message_id, msg.message_id], delay=20)
+        _schedule_delete(chat_id, [message.message_id, msg.message_id], delay=15)
     except Exception as e:
         err = await message.reply(f"Gagal menjeda: {e}")
         _schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
@@ -980,8 +1167,20 @@ async def cmd_resume_song(message: types.Message):
     try:
         await call_py.resume(chat_id)
         st.is_paused = False
+        if st.now_playing_msg_id:
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=st.now_playing_msg_id,
+                    text=_format_now_playing_text(st),
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                    reply_markup=_build_player_keyboard(is_paused=False),
+                )
+            except Exception:
+                pass
         msg = await message.reply("▶️ Musik dilanjutkan.")
-        _schedule_delete(chat_id, [message.message_id, msg.message_id], delay=20)
+        _schedule_delete(chat_id, [message.message_id, msg.message_id], delay=15)
     except Exception as e:
         err = await message.reply(f"Gagal melanjutkan: {e}")
         _schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
@@ -996,12 +1195,17 @@ async def cmd_stop_music(message: types.Message):
 
     st = _get_group_state(chat_id)
     uid = message.from_user.id
-    if uid != OWNER_ID:
-        member = await bot.get_chat_member(chat_id, uid)
-        if member.status not in ("administrator", "creator"):
-            err = await message.reply("Perintah <code>/stop</code> hanya untuk Admin atau Owner.", parse_mode=ParseMode.HTML)
-            _schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
-            return
+    if not await _is_user_admin_or_owner(chat_id, uid):
+        err = await message.reply("Perintah <code>/stop</code> hanya untuk Admin atau Owner.", parse_mode=ParseMode.HTML)
+        _schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
+        return
+
+    if st.now_playing_msg_id:
+        try:
+            await bot.delete_message(chat_id, st.now_playing_msg_id)
+        except Exception:
+            pass
+        st.now_playing_msg_id = None
 
     st.queue.clear()
     st.current_track = None
@@ -1020,7 +1224,7 @@ async def cmd_stop_music(message: types.Message):
 async def register_commands():
     cmds = [
         BotCommand(command="play", description="Putar lagu di Obrolan Suara"),
-        BotCommand(command="np", description="Lihat lagu yang sedang diputar"),
+        BotCommand(command="np", description="Lihat & kontrol lagu yang sedang diputar"),
         BotCommand(command="queue", description="Lihat daftar antrean lagu"),
         BotCommand(command="skip", description="Lewati lagu saat ini"),
         BotCommand(command="pause", description="Jeda musik di OS"),
