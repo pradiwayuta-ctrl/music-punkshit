@@ -40,5 +40,5 @@ def get_group_state(chat_id: int) -> GroupState:
 
 def is_group_allowed(chat_id: int) -> bool:
     if not ALLOWED_GROUPS:
-        return True # Ubah jadi True jika ingin bebas grup mana saja
+        return True
     return chat_id in ALLOWED_GROUPS
