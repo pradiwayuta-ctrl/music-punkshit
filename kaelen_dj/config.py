@@ -37,7 +37,5 @@ def _get_music_vault_id() -> int | str | None:
 ALLOWED_GROUPS: set[int] = _parse_allowed_groups()
 MUSIC_VAULT_ID = _get_music_vault_id()
 AUTO_DELETE_DELAY = 45
-OS_MUTE_SWEEP_INTERVAL = 10
-OS_IDLE_TIMEOUT = 300
 CACHE_DIR = "/tmp/kaelen_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
