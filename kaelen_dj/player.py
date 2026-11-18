@@ -5,7 +5,7 @@ from aiogram import Bot
 from aiogram.enums import ParseMode
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReactionTypeEmoji
 from pytgcalls import PyTgCalls
-from pytgcalls.types import MediaStream, AudioQuality, StreamEnded
+from pytgcalls.types import MediaStream, AudioQuality, Update
 
 from kaelen_dj.config import AUTO_DELETE_DELAY, logger
 from kaelen_dj.state import GroupState, TrackItem, get_group_state, is_group_allowed, spawn_task
@@ -198,7 +198,7 @@ async def play_next_in_queue(chat_id: int):
                 spawn_task(play_next_in_queue(chat_id))
 
 
-async def on_tgcalls_stream_ended(_, update: StreamEnded):
+async def on_tgcalls_stream_ended(_, update: Update):
     chat_id = getattr(update, "chat_id", None)
     if chat_id and is_group_allowed(int(chat_id)):
         await play_next_in_queue(int(chat_id))
