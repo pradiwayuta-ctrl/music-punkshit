@@ -7,8 +7,8 @@ import urllib.request
 from datetime import datetime
 from pyrogram import Client
 
-from config import MUSIC_VAULT_ID, CACHE_DIR, logger
-from state import cleanup_old_cache
+from kaelen_dj.config import MUSIC_VAULT_ID, CACHE_DIR, logger
+from kaelen_dj.state import cleanup_old_cache
 
 assistant_ref: Client | None = None
 _tg_bot_lock = asyncio.Lock()
