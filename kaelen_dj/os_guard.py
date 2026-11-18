@@ -1,4 +1,5 @@
 import time
+import random
 import asyncio
 from aiogram import Bot
 from aiogram.enums import ParseMode
@@ -212,8 +213,8 @@ async def ensure_voice_chat_open_and_muted(chat_id: int):
             await assistant_ref.invoke(
                 functions.phone.CreateGroupCall(
                     peer=peer,
-                    random_id=assistant_ref.rnd_id(),
-                    title="🍷 The Velvet Lounge — Kaelen's Booth",
+                    random_id=random.randint(1, 2147483647),
+                    title="🤘 Underground Stage — Kaelen's Booth",
                 )
             )
             await asyncio.sleep(1.0)
