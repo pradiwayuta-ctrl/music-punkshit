@@ -44,4 +44,3 @@ OS_MUTE_SWEEP_INTERVAL = 10
 OS_IDLE_TIMEOUT = 300  # 5 menit tanpa lagu -> tutup OS otomatis
 CACHE_DIR = "/tmp/kaelen_cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
-```[cite: 2]
