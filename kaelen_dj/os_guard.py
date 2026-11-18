@@ -149,7 +149,7 @@ async def close_voice_chat_if_idle(chat_id: int, call) -> bool:
         logger.info("OS di grup %s ditutup otomatis karena idle.", chat_id)
         await bot_ref.send_message(
             chat_id,
-            "🕯️ <i>Lima menit berlalu tanpa alunan nada. Aku tutup dulu Obrolan Suara malam ini—panggil aku kapan saja kau ingin mendengar musik lagi.</i>",
+            "🎸 <i>Udah 5 menit kaga ada yang ngegas lagu. Ampli gue matiin dulu ya bray—panggil lagi kalo mau berisik!</i>",
             parse_mode=ParseMode.HTML,
         )
         return True
