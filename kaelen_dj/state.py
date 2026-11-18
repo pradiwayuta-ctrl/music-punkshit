@@ -3,7 +3,7 @@ import glob
 import asyncio
 from collections import deque
 from dataclasses import dataclass, field
-from config import OWNER_ID, ALLOWED_GROUPS, CACHE_DIR
+from kaelen_dj.config import OWNER_ID, ALLOWED_GROUPS, CACHE_DIR
 
 
 @dataclass
