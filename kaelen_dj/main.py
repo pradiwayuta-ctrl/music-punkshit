@@ -1,77 +1,276 @@
+import html
+import time
 import asyncio
-from pyrogram import Client
-from pytgcalls import PyTgCalls, filters as tgcalls_filters
-from aiogram import Bot, Dispatcher
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats
+from aiogram import Bot
+from aiogram.enums import ParseMode
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReactionTypeEmoji
+from pytgcalls import PyTgCalls
+from pytgcalls.types import MediaStream, AudioQuality, Update
 
-from kaelen_dj.config import BOT_TOKEN, API_ID, API_HASH, SESSION_STRING, ALLOWED_GROUPS, MUSIC_VAULT_ID, logger
-from kaelen_dj.state import spawn_task
-from kaelen_dj.os_guard import init_os_guard, enforce_os_listener_mute, periodic_os_mute_enforcer
-from kaelen_dj.music_finder import init_finder
-from kaelen_dj.player import init_player, on_tgcalls_stream_ended
-from kaelen_dj.handlers import router
+from kaelen_dj.config import AUTO_DELETE_DELAY, logger
+from kaelen_dj.state import GroupState, TrackItem, get_group_state, is_group_allowed, spawn_task
+from kaelen_dj.os_guard import ensure_voice_chat_open_and_muted, unmute_assistant_in_call, mute_all_non_admins
+from kaelen_dj.music_finder import resolve_audio_track
 
-
-async def register_commands(bot: Bot):
-    group_cmds = [
-        BotCommand(command="start", description="Nyalain sound system & buka menu tombol"),
-        BotCommand(command="play", description="Putar lagu / masukin antrean moshpit"),
-        BotCommand(command="np", description="Buka panel kontrol lagu yang lagi ngegas"),
-        BotCommand(command="queue", description="Cek daftar antrean lagu"),
-        BotCommand(command="skip", description="Tendang lagu yang lagi jalan"),
-        BotCommand(command="pause", description="Rem musik bentar"),
-        BotCommand(command="resume", description="Gas pol musik lagi"),
-        BotCommand(command="stop", description="[Admin] Cabut kabel ampli & bubarin antrean"),
-        BotCommand(command="feedback", description="Kirim bacotan atau laporan ke bos besar"),
-    ]
-    private_cmds = [
-        BotCommand(command="start", description="Buka markas & menu tombol"),
-        BotCommand(command="help", description="Panduan nge-gig di grup"),
-        BotCommand(command="feedback", description="Kirim keluhan atau request fitur"),
-    ]
-    await bot.set_my_commands(group_cmds, scope=BotCommandScopeAllGroupChats())
-    await bot.set_my_commands(private_cmds, scope=BotCommandScopeAllPrivateChats())
+bot_ref: Bot | None = None
+call_py_ref: PyTgCalls | None = None
 
 
-async def main():
-    bot = Bot(token=BOT_TOKEN)
-    dp = Dispatcher(storage=MemoryStorage())
-    dp.include_router(router)
+def init_player(bot: Bot, call_py: PyTgCalls):
+    global bot_ref, call_py_ref
+    bot_ref = bot
+    call_py_ref = call_py
 
-    await register_commands(bot)
 
-    assistant = Client(
-        name="music_assistant",
-        api_id=API_ID,
-        api_hash=API_HASH,
-        session_string=SESSION_STRING,
+def mention(uid: int, name: str) -> str:
+    return f'<a href="tg://user?id={uid}">{html.escape(name or "Brader")}</a>'
+
+
+async def react_msg(chat_id: int, message_id: int, emoji: str = "🤘"):
+    try:
+        await bot_ref.set_message_reaction(
+            chat_id=chat_id,
+            message_id=message_id,
+            reaction=[ReactionTypeEmoji(emoji=emoji)],
+        )
+    except Exception:
+        pass
+
+
+def schedule_delete(chat_id: int, message_ids: list[int], delay: int = AUTO_DELETE_DELAY):
+    async def _worker():
+        await asyncio.sleep(delay)
+        for mid in message_ids:
+            if not mid:
+                continue
+            try:
+                await bot_ref.delete_message(chat_id=chat_id, message_id=mid)
+            except Exception:
+                pass
+
+    spawn_task(_worker())
+
+
+async def send_group_msg(
+    chat_id: int,
+    text: str,
+    thread_id: int | None = None,
+    auto_delete: int = AUTO_DELETE_DELAY,
+    reply_markup: InlineKeyboardMarkup | None = None,
+):
+    clean_tid = thread_id if (thread_id and thread_id != 1) else None
+    attempts = [clean_tid, None] if clean_tid else [None]
+    for tid in attempts:
+        kwargs = {"message_thread_id": tid} if tid else {}
+        try:
+            sent = await bot_ref.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+                reply_markup=reply_markup,
+                **kwargs,
+            )
+            if sent and auto_delete > 0:
+                schedule_delete(chat_id, [sent.message_id], delay=auto_delete)
+            return sent
+        except Exception as e:
+            if tid and "thread not found" in str(e).lower():
+                continue
+            logger.warning("Gagal kirim pesan ke grup %s: %s", chat_id, e)
+            return None
+
+
+def build_player_keyboard(is_paused: bool) -> InlineKeyboardMarkup:
+    toggle_btn = (
+        InlineKeyboardButton(text="▶️ Gas Lagi", callback_data="dj:resume")
+        if is_paused
+        else InlineKeyboardButton(text="⏸ Rem Dulu", callback_data="dj:pause")
     )
-    assistant.on_raw_update()(enforce_os_listener_mute)
-
-    call_py = PyTgCalls(assistant)
-    # PERBAIKAN: Hapus tanda kurung () pada stream_end
-    call_py.on_update(tgcalls_filters.stream_end)(on_tgcalls_stream_ended)
-
-    await assistant.start()
-    me = await assistant.get_me()
-    await call_py.start()
-
-    init_os_guard(bot, assistant, call_py, me.id)
-    init_finder(assistant)
-    init_player(bot, call_py)
-
-    logger.info(
-        "Akun Asisten Multi-Group (@%s / %s) aktif! ALLOWED_GROUPS: %s | MUSIC_VAULT_ID: %s",
-        me.username or me.first_name,
-        me.id,
-        sorted(ALLOWED_GROUPS) if ALLOWED_GROUPS else "KOSONG (Semua grup diblokir)",
-        MUSIC_VAULT_ID,
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                toggle_btn,
+                InlineKeyboardButton(text="⏭ Ganti Trek", callback_data="dj:skip"),
+                InlineKeyboardButton(text="⏹ Cabut Kabel", callback_data="dj:stop"),
+            ],
+            [
+                InlineKeyboardButton(text="📜 Antrean Moshpit", callback_data="dj:queue"),
+                InlineKeyboardButton(text="🔄 Refresh Panel", callback_data="dj:refresh"),
+            ],
+        ]
     )
 
-    spawn_task(periodic_os_mute_enforcer())
-    await dp.start_polling(bot)
+
+def format_now_playing_text(st: GroupState) -> str:
+    track = st.current_track
+    if not track:
+        return "🎸 <i>Ampli lagi mati, bray. Belum ada distorsi yang ngegas.</i>"
+    state_label = "⏸ Lagi Di-Pause" if st.is_paused else "🔥 Lagi Ngegas"
+    link_part = (
+        f'<a href="{html.escape(track.webpage_url)}">{html.escape(track.title)}</a>'
+        if track.webpage_url
+        else f"<b>{html.escape(track.title)}</b>"
+    )
+    return (
+        f"🤘 <b>UNDERGROUND STAGE — {state_label}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"• <b>Trek:</b> {link_part} (<code>{track.duration}</code>)\n"
+        f"• <b>Yang Req:</b> {mention(track.requester_id, track.requester_name)}\n"
+        f"• <b>Lapak:</b> {html.escape(track.source_label)} • <b>Sisa Antrean:</b> {len(st.queue)} lagu"
+    )
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+async def is_actively_playing_in_os(chat_id: int) -> bool:
+    st = get_group_state(chat_id)
+    if not call_py_ref or st.current_track is None:
+        return False
+    try:
+        calls_attr = getattr(call_py_ref, "calls", None)
+        if callable(calls_attr):
+            active_calls = await calls_attr()
+            return chat_id in active_calls
+        if isinstance(calls_attr, dict):
+            return chat_id in calls_attr
+    except Exception:
+        pass
+    return True
+
+
+async def play_next_in_queue(chat_id: int):
+    st = get_group_state(chat_id)
+    async with st.play_lock:
+        if st.now_playing_msg_id:
+            try:
+                await bot_ref.delete_message(chat_id, st.now_playing_msg_id)
+            except Exception:
+                pass
+            st.now_playing_msg_id = None
+
+        if not st.queue:
+            st.current_track = None
+            st.is_paused = False
+            st.idle_since = time.monotonic()
+            try:
+                await call_py_ref.leave_call(chat_id)
+            except Exception:
+                pass
+            return
+
+        next_track = st.queue.popleft()
+        st.current_track = next_track
+        st.is_paused = False
+        st.idle_since = None
+
+        try:
+            call = await ensure_voice_chat_open_and_muted(chat_id)
+            if not call:
+                raise RuntimeError(
+                    "Akun asisten belum dikasih pangkat Admin + izin Manage Voice Chats, coy!"
+                )
+
+            stream = MediaStream(
+                next_track.stream_url,
+                audio_parameters=AudioQuality.MEDIUM,
+                video_flags=MediaStream.Flags.IGNORE,
+            )
+            await call_py_ref.play(chat_id, stream)
+            await unmute_assistant_in_call(call)
+            await mute_all_non_admins(chat_id, call)
+
+            sent = await send_group_msg(
+                chat_id,
+                format_now_playing_text(st),
+                thread_id=next_track.thread_id,
+                auto_delete=0,
+                reply_markup=build_player_keyboard(is_paused=False),
+            )
+            if sent:
+                st.now_playing_msg_id = sent.message_id
+        except Exception as e:
+            logger.error("PyTgCalls play error di grup %s: %s", chat_id, e)
+            await send_group_msg(
+                chat_id,
+                f"💥 Kacau! Kaset <b>{html.escape(next_track.title)}</b> nyangkut di tape.\n"
+                f"<i>Biang kerok: {html.escape(str(e))}</i>",
+                thread_id=next_track.thread_id,
+                auto_delete=30,
+            )
+            st.current_track = None
+            st.idle_since = time.monotonic()
+            if st.queue:
+                spawn_task(play_next_in_queue(chat_id))
+
+
+async def on_tgcalls_stream_ended(_, update: Update):
+    chat_id = getattr(update, "chat_id", None)
+    if chat_id and is_group_allowed(int(chat_id)):
+        await play_next_in_queue(int(chat_id))
+
+
+async def enqueue_song_request(
+    chat_id: int,
+    query: str,
+    uid: int,
+    requester_name: str,
+    thread_id: int | None = None,
+    announce_queue: bool = True,
+) -> bool:
+    st = get_group_state(chat_id)
+
+    info = await resolve_audio_track(query)
+    if not info:
+        await send_group_msg(
+            chat_id,
+            f"💀 Udah gue ubek-ubek gudang kaset, tapi <b>{html.escape(query)}</b> kagak ketemu, bray.",
+            thread_id=thread_id,
+            auto_delete=25,
+        )
+        return False
+
+    track = TrackItem(
+        title=info["title"],
+        stream_url=info["stream_url"],
+        webpage_url=info["webpage_url"],
+        duration=info["duration"],
+        requester_id=uid,
+        requester_name=requester_name,
+        thread_id=thread_id,
+        source_label=info.get("source_label", "Music Vault"),
+    )
+
+    should_start_now = False
+    pos = 0
+    async with st.enqueue_lock:
+        if st.current_track is not None and not await is_actively_playing_in_os(chat_id):
+            st.current_track = None
+            st.is_paused = False
+
+        st.idle_since = None
+        st.queue.append(track)
+        if st.current_track is None:
+            should_start_now = True
+        else:
+            pos = len(st.queue)
+
+    if should_start_now:
+        await play_next_in_queue(chat_id)
+    elif announce_queue:
+        await send_group_msg(
+            chat_id,
+            f"📼 <b>Masuk Antrean Moshpit (#{pos})</b>\n"
+            f"• <b>Lagu:</b> {html.escape(track.title)} (<code>{track.duration}</code>)\n"
+            f"• <b>Yang Req:</b> {mention(uid, requester_name)}\n"
+            f"<i>Sabar ya bray, ntar juga giliran lu ngegas!</i>",
+            thread_id=thread_id,
+            auto_delete=35,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="📜 Cek Antrean", callback_data="dj:queue"),
+                        InlineKeyboardButton(text="🎛 Panel Player", callback_data="dj:panel"),
+                    ]
+                ]
+            ),
+        )
+    return True
