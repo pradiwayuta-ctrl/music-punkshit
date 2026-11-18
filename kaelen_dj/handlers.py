@@ -18,7 +18,7 @@ async def reject_unauthorized_group(bot, chat_id: int):
     try:
         await bot.send_message(
             chat_id,
-            "🍷 <i>Maaf, ruangan ini tidak masuk dalam daftar tamu privatku. Aku permisi undur diri.</i>",
+            "🖕 <i>Sori bray, tongkrongan ini kagak masuk daftar tamu gue. Gue cabut dulu!</i>",
             parse_mode=ParseMode.HTML,
         )
     except Exception:
@@ -33,29 +33,40 @@ def _private_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="📖 Panduan & Contoh", callback_data="pc:tutor"),
-                InlineKeyboardButton(text="💬 Kirim Feedback", callback_data="pc:feedback"),
-            ]
+                InlineKeyboardButton(text="🎸 Cara Nge-Gig", callback_data="pc:tutor"),
+                InlineKeyboardButton(text="🎛 Daftar Perintah", callback_data="pc:cmds"),
+            ],
+            [
+                InlineKeyboardButton(text="📣 Bacotan / Feedback", callback_data="pc:feedback"),
+            ],
         ]
     )
 
 
-# --- GREETING & TUTORIAL DI PRIVATE CHAT (PC BOT) ---
+def _group_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🎛 Panel Player", callback_data="grp:panel"),
+                InlineKeyboardButton(text="📜 Cek Antrean", callback_data="grp:queue"),
+            ],
+            [
+                InlineKeyboardButton(text="🎸 Cara Req Lagu", callback_data="grp:howto"),
+                InlineKeyboardButton(text="📣 Lapor / Feedback", callback_data="grp:fb"),
+            ],
+        ]
+    )
+
+
+# --- MENU BUTTON DI PRIVATE CHAT (PC BOT) ---
 @router.message(Command("start", "help"), F.chat.type == "private")
 async def cmd_start_private(message: types.Message):
     user_mention = player.mention(message.from_user.id, message.from_user.first_name)
     text = (
-        f"🍷 <b>Selamat datang di balik tirai, {user_mention}.</b>\n\n"
-        f"Aku <b>Kaelen Thorne</b>, penjaga booth musik di <i>The Velvet Lounge</i>. "
-        f"Aku bertugas mengatur atmosfer dan memutar musik secara eksklusif di grup yang telah terdaftar.\n\n"
-        f"<b>Ringkasan Perintah di Grup:</b>\n"
-        f"• <code>/play judul lagu</code> — Memutar / menambah lagu ke antrean\n"
-        f"• <code>/np</code> — Menampilkan panel kontrol pemutar aktif\n"
-        f"• <code>/queue</code> — Melihat daftar antrean lagu\n"
-        f"• <code>/skip</code> — Melewati lagu yang sedang berputar\n"
-        f"• <code>/pause</code> & <code>/resume</code> — Jeda atau lanjutkan musik\n"
-        f"• <code>/stop</code> — <i>[Admin]</i> Hentikan sesi & bersihkan antrean\n\n"
-        f"<i>Tekan tombol di bawah untuk melihat contoh penggunaan atau mengirim masukan ke pengelola.</i>"
+        f"🤘 <b>Yo, apa kabar {user_mention}!</b>\n\n"
+        f"Gue <b>Kaelen</b>, operator sound system di <i>Underground Stage</i>. "
+        f"Kerjaan gue bikin tongkrongan lo berisik pake musik pilihan anak-anak skena—anti ribet, anti aturan kaku.\n\n"
+        f"<i>Pencet aja tombol di bawah buat liat cara main atau kirim bacotan ke bos besar:</i>"
     )
     await message.reply(text, parse_mode=ParseMode.HTML, reply_markup=_private_menu_keyboard())
 
@@ -63,47 +74,55 @@ async def cmd_start_private(message: types.Message):
 @router.callback_query(F.data.startswith("pc:"))
 async def on_private_menu_click(callback: CallbackQuery):
     action = callback.data.split(":", 1)[1]
+    back_btn = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 Balik ke Depan", callback_data="pc:home")]]
+    )
+
     if action == "tutor":
         tutor_text = (
-            "📖 <b>Tutorial & Contoh Penggunaan</b>\n"
+            "🎸 <b>Panduan Nge-Gig di Grup</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "1️⃣ <b>Persiapan Grup:</b>\n"
-            "   • Pastikan bot & akun asisten sudah menjadi <b>Admin</b> dengan izin <i>Manage Voice Chats</i> & <i>Invite Users</i>.\n\n"
-            "2️⃣ <b>Memutar Lagu:</b>\n"
-            "   • Ketik: <code>/play Frank Sinatra - Fly Me To The Moon</code>\n"
-            "   • Atau: <code>/play Nadin Amizah - Bertaut</code>\n"
-            "   • Jika Obrolan Suara belum aktif, aku akan membukanya otomatis dan membisukan pendengar non-admin.\n\n"
-            "3️⃣ <b>Mengatur Pemutaran:</b>\n"
-            "   • Gunakan tombol <b>⏸ Jeda</b>, <b>▶️ Lanjutkan</b>, <b>⏭ Lewati</b>, atau <b>⏹ Hentikan</b> langsung di pesan player."
+            "1️⃣ <b>Beresin Pangkat:</b>\n"
+            "   • Angkat bot & akun asisten jadi <b>Admin</b> di grup (wajib centang <i>Manage Voice Chats</i> & <i>Invite Users</i>).\n\n"
+            "2️⃣ <b>Putar Distorsi:</b>\n"
+            "   • Ketik: <code>/play Green Day - American Idiot</code>\n"
+            "   • Atau: <code>/play Blink-182 - Dammit</code>\n"
+            "   • OS grup bakal kebuka otomatis & pendengar biasa langsung di-mute biar kaga berisik!\n\n"
+            "3️⃣ <b>Kendali Penuh Pake Tombol:</b>\n"
+            "   • Tinggal pencet tombol <b>⏸ Rem Dulu</b>, <b>▶️ Gas Lagi</b>, <b>⏭ Ganti Trek</b>, atau <b>⏹ Cabut Kabel</b> di player."
         )
-        await callback.message.edit_text(
-            tutor_text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="🔙 Kembali", callback_data="pc:home")]]
-            ),
+        await callback.message.edit_text(tutor_text, parse_mode=ParseMode.HTML, reply_markup=back_btn)
+
+    elif action == "cmds":
+        cmds_text = (
+            "🎛 <b>Daftar Perintah Tongkrongan</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "• <code>/play judul lagu</code> — Gas putar / masukin antrean\n"
+            "• <code>/np</code> — Munculin tombol kontrol player\n"
+            "• <code>/queue</code> — Liat antrean moshpit\n"
+            "• <code>/skip</code> — Tendang lagu yang lagi jalan\n"
+            "• <code>/pause</code> & <code>/resume</code> — Rem atau gas lagi\n"
+            "• <code>/stop</code> — <i>[Admin]</i> Matiin ampli & bubarin antrean\n"
+            "• <code>/feedback pesan</code> — Kirim keluhan/request ke owner"
         )
+        await callback.message.edit_text(cmds_text, parse_mode=ParseMode.HTML, reply_markup=back_btn)
+
     elif action == "feedback":
         fb_text = (
-            "💬 <b>Kirim Feedback / Laporan</b>\n"
+            "📣 <b>Kirim Bacotan / Feedback</b>\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "Punya saran lagu, masukan fitur, atau menemukan kendala saat memutar musik?\n\n"
-            "Kirim pesan di chat ini dengan format:\n"
-            "<code>/feedback pesan atau saranmu di sini</code>\n\n"
-            "<i>Contoh:</i> <code>/feedback Tolong tambahkan playlist jazz malam hari!</code>"
+            "Ada bug, lagu nyangkut, atau mau request fitur gokil?\n\n"
+            "Ketik aja langsung format ini:\n"
+            "<code>/feedback isi pesan lo di sini</code>\n\n"
+            "<i>Contoh:</i> <code>/feedback Tambahin playlist punk rock 90an dong bray!</code>"
         )
-        await callback.message.edit_text(
-            fb_text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="🔙 Kembali", callback_data="pc:home")]]
-            ),
-        )
+        await callback.message.edit_text(fb_text, parse_mode=ParseMode.HTML, reply_markup=back_btn)
+
     elif action == "home":
         user_mention = player.mention(callback.from_user.id, callback.from_user.first_name)
         await callback.message.edit_text(
-            f"🍷 <b>Selamat datang kembali, {user_mention}.</b>\n"
-            f"Silakan pilih menu di bawah untuk melihat panduan atau mengirim masukan.",
+            f"🤘 <b>Balik lagi, {user_mention}!</b>\n"
+            f"Pilih tombol di bawah mau ngapain:",
             parse_mode=ParseMode.HTML,
             reply_markup=_private_menu_keyboard(),
         )
@@ -115,7 +134,7 @@ async def cmd_feedback(message: types.Message):
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
         err = await message.reply(
-            "💬 Tuliskan masukanmu setelah perintah.\nContoh: <code>/feedback Lagu sering putus-putus di grup</code>",
+            "📣 Tulis dulu bacotan lo setelah command, bray!\nContoh: <code>/feedback Suara lagu putus-putus nih</code>",
             parse_mode=ParseMode.HTML,
         )
         if message.chat.type != "private":
@@ -124,30 +143,34 @@ async def cmd_feedback(message: types.Message):
 
     fb_content = html.escape(parts[1].strip()[:1000])
     sender = player.mention(message.from_user.id, message.from_user.first_name)
-    origin = "Private Chat" if message.chat.type == "private" else f"Grup <b>{html.escape(message.chat.title or str(message.chat.id))}</b> (<code>{message.chat.id}</code>)"
+    origin = (
+        "Private Chat"
+        if message.chat.type == "private"
+        else f"Grup <b>{html.escape(message.chat.title or str(message.chat.id))}</b> (<code>{message.chat.id}</code>)"
+    )
 
     try:
         await message.bot.send_message(
             OWNER_ID,
-            f"📩 <b>Feedback Baru — Kaelen DJ</b>\n"
+            f"📣 <b>Surat Kaleng Baru — Kaelen DJ</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"• <b>Dari:</b> {sender} (<code>{message.from_user.id}</code>)\n"
-            f"• <b>Lokasi:</b> {origin}\n"
-            f"• <b>Pesan:</b>\n<blockquote>{fb_content}</blockquote>",
+            f"• <b>TKP:</b> {origin}\n"
+            f"• <b>Isi Bacotan:</b>\n<blockquote>{fb_content}</blockquote>",
             parse_mode=ParseMode.HTML,
         )
         reply_msg = await message.reply(
-            "🍷 <i>Terima kasih. Catatanmu sudah kusampaikan langsung ke meja pemilik lounge.</i>",
+            "🤘 <i>Sip! Pesan lo udah gue lempar ke meja bos besar.</i>",
             parse_mode=ParseMode.HTML,
         )
     except Exception:
-        reply_msg = await message.reply("⚠️ Maaf, gagal meneruskan feedback saat ini.")
+        reply_msg = await message.reply("💥 Gagal ngirim pesan, jaringan lagi ampas.")
 
     if message.chat.type != "private":
         player.schedule_delete(message.chat.id, [message.message_id, reply_msg.message_id], delay=20)
 
 
-# --- GREETING & TUTORIAL SAAT BOT MASUK GRUP ---
+# --- GREETING & MENU BUTTON SAAT BOT MASUK GRUP ---
 @router.my_chat_member(F.chat.type.in_({"group", "supergroup"}))
 async def on_bot_added_to_group(event: ChatMemberUpdated):
     chat_id = event.chat.id
@@ -162,20 +185,17 @@ async def on_bot_added_to_group(event: ChatMemberUpdated):
         get_group_state(chat_id)
         joined = await ensure_assistant_in_group(chat_id)
         status_note = (
-            "✅ Akun asisten sudah bersiap di sudut ruangan."
+            "✅ Akun asisten udah nongkrong di pojokan, siap ngegas."
             if joined
-            else "⚠️ <i>Pastikan aku memiliki izin <b>Invite Users</b> & <b>Manage Voice Chats</b> agar asistenku bisa masuk ke Obrolan Suara.</i>"
+            else "⚠️ <i>Kasih gue pangkat <b>Admin</b> + izin <b>Invite Users</b> & <b>Manage Voice Chats</b> biar asisten gue bisa masuk OS!</i>"
         )
         await player.send_group_msg(
             chat_id,
-            f"🍷 <b>Tirai lounge telah dibuka di {html.escape(event.chat.title or 'ruangan ini')}.</b>\n"
+            f"🤘 <b>Panggung udah kebuka di {html.escape(event.chat.title or 'tongkrongan ini')}!</b>\n"
             f"{status_note}\n\n"
-            f"📖 <b>Contoh Penggunaan Cepat:</b>\n"
-            f"• <code>/play Frank Sinatra - Fly Me To The Moon</code>\n"
-            f"• <code>/np</code> — Kontrol pemutar lagu\n"
-            f"• <code>/queue</code> — Lihat antrean\n"
-            f"• <code>/feedback pesan</code> — Kirim masukan ke pengelola",
+            f"<i>Pencet tombol di bawah buat cek menu & cara main:</i>",
             auto_delete=60,
+            reply_markup=_group_menu_keyboard(),
         )
 
 
@@ -188,17 +208,88 @@ async def cmd_start_group(message: types.Message):
 
     user_mention = player.mention(message.from_user.id, message.from_user.first_name)
     text = (
-        f"🍷 <b>Malam yang tenang, {user_mention}.</b>\n"
-        f"Booth musik sudah siap. Gunakan perintah berikut:\n\n"
-        f"• <code>/play judul lagu - penyanyi</code> — Putar / tambah antrean\n"
-        f"• <code>/np</code> — Panel kontrol lagu aktif\n"
-        f"• <code>/queue</code> — Daftar antrean\n"
-        f"• <code>/skip</code>, <code>/pause</code>, <code>/resume</code> — Kendali pemutaran\n"
-        f"• <code>/stop</code> — <i>[Admin]</i> Hentikan sesi musik\n"
-        f"• <code>/feedback pesan</code> — Kirim saran/laporan"
+        f"🤘 <b>Yo {user_mention}, sound system udah nyala!</b>\n"
+        f"Mau ngapain nih? Pencet aja tombol di bawah:"
     )
-    sent = await message.reply(text, parse_mode=ParseMode.HTML)
-    player.schedule_delete(chat_id, [message.message_id, sent.message_id], delay=40)
+    sent = await message.reply(text, parse_mode=ParseMode.HTML, reply_markup=_group_menu_keyboard())
+    player.schedule_delete(chat_id, [message.message_id, sent.message_id], delay=45)
+
+
+# --- CALLBACK MENU TOMBOL DI GRUP ---
+@router.callback_query(F.data.startswith("grp:"))
+async def on_group_menu_click(callback: CallbackQuery):
+    if not callback.message or callback.message.chat.type not in ("group", "supergroup"):
+        await callback.answer()
+        return
+
+    chat_id = callback.message.chat.id
+    if not is_group_allowed(chat_id):
+        await callback.answer("🖕 Tongkrongan ini kagak terdaftar!", show_alert=True)
+        return
+
+    action = callback.data.split(":", 1)[1]
+    st = get_group_state(chat_id)
+    back_grp = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 Balik ke Menu", callback_data="grp:home")]]
+    )
+
+    if action == "home":
+        await callback.message.edit_text(
+            "🤘 <b>Markas Sound System — Pilih Tombol:</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_group_menu_keyboard(),
+        )
+        await callback.answer()
+
+    elif action == "howto":
+        await callback.message.edit_text(
+            "🎸 <b>Cara Request Lagu di Sini</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "Ketik <code>/play judul lagu - band</code>\n"
+            "• Contoh: <code>/play Superman Is Dead - Kuat Kita Bersinar</code>\n"
+            "• Contoh: <code>/play Tipe-X - Genit</code>\n\n"
+            "<i>Abis itu tinggal pencet-pencet tombol di panel player buat pause, skip, atau cek antrean!</i>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_grp,
+        )
+        await callback.answer()
+
+    elif action == "fb":
+        await callback.message.edit_text(
+            "📣 <b>Kirim Laporan / Request Fitur</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "Ketik langsung di chat:\n"
+            "<code>/feedback pesan lo di sini</code>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=back_grp,
+        )
+        await callback.answer()
+
+    elif action == "queue":
+        if not st.current_track and not st.queue:
+            await callback.answer("📭 Antrean masih kosong melompong, bray!", show_alert=True)
+            return
+        lines = []
+        if st.current_track:
+            lines.append(f"🔥 {st.current_track.title[:38]}")
+        for idx, t in enumerate(list(st.queue)[:6], start=1):
+            lines.append(f"{idx}. {t.title[:35]}")
+        if len(st.queue) > 6:
+            lines.append(f"... +{len(st.queue) - 6} lagu lagi")
+        await callback.answer("\n".join(lines)[:200], show_alert=True)
+
+    elif action == "panel":
+        if not st.current_track:
+            await callback.answer("🎸 Belum ada lagu yang ngegas! Ketik /play dulu.", show_alert=True)
+            return
+        await callback.message.edit_text(
+            player.format_now_playing_text(st),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+            reply_markup=player.build_player_keyboard(is_paused=st.is_paused),
+        )
+        st.now_playing_msg_id = callback.message.message_id
+        await callback.answer("🎛 Panel player dibuka!")
 
 
 # --- CALLBACK HANDLER UNTUK TOMBOL INLINE PLAYER ---
@@ -210,7 +301,7 @@ async def on_player_button_click(callback: CallbackQuery):
 
     chat_id = callback.message.chat.id
     if not is_group_allowed(chat_id):
-        await callback.answer("⛔ Ruangan ini tidak terdaftar.", show_alert=True)
+        await callback.answer("🖕 Tongkrongan ini kagak terdaftar!", show_alert=True)
         return
 
     st = get_group_state(chat_id)
@@ -219,24 +310,58 @@ async def on_player_button_click(callback: CallbackQuery):
 
     if action == "queue":
         if not st.current_track and not st.queue:
-            await callback.answer("📭 Daftar putar masih kosong.", show_alert=True)
+            await callback.answer("📭 Antrean moshpit masih kosong, bray!", show_alert=True)
             return
         lines = []
         if st.current_track:
-            lines.append(f"🎶 {st.current_track.title[:38]}")
+            lines.append(f"🔥 {st.current_track.title[:38]}")
         for idx, t in enumerate(list(st.queue)[:6], start=1):
             lines.append(f"{idx}. {t.title[:35]}")
         if len(st.queue) > 6:
-            lines.append(f"... +{len(st.queue) - 6} lagu lainnya")
+            lines.append(f"... +{len(st.queue) - 6} lagu lagi")
         await callback.answer("\n".join(lines)[:200], show_alert=True)
         return
 
+    if action == "panel":
+        if not st.current_track:
+            await callback.answer("🎸 Kagak ada lagu yang lagi jalan.", show_alert=True)
+            return
+        if st.now_playing_msg_id:
+            try:
+                await callback.message.bot.delete_message(chat_id, st.now_playing_msg_id)
+            except Exception:
+                pass
+        sent = await player.send_group_msg(
+            chat_id,
+            player.format_now_playing_text(st),
+            thread_id=callback.message.message_thread_id,
+            auto_delete=0,
+            reply_markup=player.build_player_keyboard(is_paused=st.is_paused),
+        )
+        if sent:
+            st.now_playing_msg_id = sent.message_id
+        await callback.answer("🎛 Panel player muncul!")
+        return
+
     if not st.current_track:
-        await callback.answer("🕯️ Tidak ada lagu yang sedang berputar.", show_alert=True)
+        await callback.answer("🎸 Ampli lagi mati, kaga ada lagu yang jalan.", show_alert=True)
         try:
             await callback.message.delete()
         except Exception:
             pass
+        return
+
+    if action == "refresh":
+        try:
+            await callback.message.edit_text(
+                player.format_now_playing_text(st),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+                reply_markup=player.build_player_keyboard(is_paused=st.is_paused),
+            )
+        except Exception:
+            pass
+        await callback.answer("🔄 Panel udah seger lagi!")
         return
 
     is_admin = await is_user_admin_or_owner(chat_id, uid)
@@ -244,7 +369,7 @@ async def on_player_button_click(callback: CallbackQuery):
 
     if action == "stop":
         if not is_admin:
-            await callback.answer("⛔ Hanya pengelola ruangan (Admin) yang bisa menutup sesi ini.", show_alert=True)
+            await callback.answer("⛔ Eits, cuma Admin yang boleh cabut kabel ampli!", show_alert=True)
             return
         st.queue.clear()
         st.current_track = None
@@ -255,10 +380,10 @@ async def on_player_button_click(callback: CallbackQuery):
             await player.call_py_ref.leave_call(chat_id)
         except Exception:
             pass
-        await callback.answer("⏹️ Sesi musik dihentikan.")
+        await callback.answer("⏹️ Kabel ampli dicabut!")
         try:
             await callback.message.edit_text(
-                f"⏹️ Piringan hitam dihentikan oleh {player.mention(uid, callback.from_user.first_name)}. Suasana kembali hening.",
+                f"⏹️ Kabel ampli dicabut sama {player.mention(uid, callback.from_user.first_name)}. Tongkrongan bubar!",
                 parse_mode=ParseMode.HTML,
             )
             player.schedule_delete(chat_id, [callback.message.message_id], delay=15)
@@ -267,17 +392,17 @@ async def on_player_button_click(callback: CallbackQuery):
         return
 
     if not (is_admin or is_requester):
-        await callback.answer("⛔ Hanya pemesan lagu atau Admin yang memegang kendali trek ini.", show_alert=True)
+        await callback.answer("⛔ Jangan asal pencet! Cuma yang req lagu atau Admin yang pegang kendali.", show_alert=True)
         return
 
     if action == "pause":
         if st.is_paused:
-            await callback.answer("Alunan musik memang sedang dijeda.")
+            await callback.answer("Udah di-rem dari tadi, bray.")
             return
         try:
             await player.call_py_ref.pause(chat_id)
             st.is_paused = True
-            await callback.answer("⏸️ Musik dijeda sejenak.")
+            await callback.answer("⏸️ Musik di-rem bentar.")
             await callback.message.edit_text(
                 player.format_now_playing_text(st),
                 parse_mode=ParseMode.HTML,
@@ -285,16 +410,16 @@ async def on_player_button_click(callback: CallbackQuery):
                 reply_markup=player.build_player_keyboard(is_paused=True),
             )
         except Exception as e:
-            await callback.answer(f"Gagal menjeda: {e}", show_alert=True)
+            await callback.answer(f"Gagal nge-rem: {e}", show_alert=True)
 
     elif action == "resume":
         if not st.is_paused:
-            await callback.answer("Musik sedang mengalun.")
+            await callback.answer("Lagi ngegas kok ini!")
             return
         try:
             await player.call_py_ref.resume(chat_id)
             st.is_paused = False
-            await callback.answer("▶️ Melanjutkan alunan musik.")
+            await callback.answer("▶️ Gas pol lagi!")
             await callback.message.edit_text(
                 player.format_now_playing_text(st),
                 parse_mode=ParseMode.HTML,
@@ -302,14 +427,14 @@ async def on_player_button_click(callback: CallbackQuery):
                 reply_markup=player.build_player_keyboard(is_paused=False),
             )
         except Exception as e:
-            await callback.answer(f"Gagal melanjutkan: {e}", show_alert=True)
+            await callback.answer(f"Gagal ngegas: {e}", show_alert=True)
 
     elif action == "skip":
         skipped_title = st.current_track.title
-        await callback.answer(f"⏭️ Melewati: {skipped_title[:40]}")
+        await callback.answer(f"⏭️ Nendang lagu: {skipped_title[:40]}")
         await player.send_group_msg(
             chat_id,
-            f"⏭️ <b>{html.escape(skipped_title)}</b> dilewati atas permintaan {player.mention(uid, callback.from_user.first_name)}.",
+            f"⏭️ <b>{html.escape(skipped_title)}</b> ditendang dari panggung sama {player.mention(uid, callback.from_user.first_name)}.",
             thread_id=callback.message.message_thread_id,
             auto_delete=20,
         )
@@ -328,17 +453,18 @@ async def cmd_play_song(message: types.Message):
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
         err = await message.reply(
-            "🍷 Sebutkan judulnya agar aku bisa mencarikannya.\nContoh: <code>/play Frank Sinatra - Fly Me To The Moon</code>",
+            "🤘 Sebut judul lagunya dong bray!\nContoh: <code>/play Green Day - Basket Case</code>",
             parse_mode=ParseMode.HTML,
+            reply_markup=_group_menu_keyboard(),
         )
         player.schedule_delete(chat_id, [message.message_id, err.message_id], delay=20)
         return
 
     query = parts[1].strip()[:120]
 
-    await player.react_msg(chat_id, message.message_id, "🍷")
+    await player.react_msg(chat_id, message.message_id, "🤘")
     search_msg = await message.reply(
-        f"🔎 <i>Sebentar, aku carikan piringan hitam untuk <b>{html.escape(query)}</b>...</i>",
+        f"🔎 <i>Bentar, lagi ngubek kaset <b>{html.escape(query)}</b>...</i>",
         parse_mode=ParseMode.HTML,
     )
 
@@ -362,10 +488,11 @@ async def cmd_now_playing(message: types.Message):
     st = get_group_state(chat_id)
     if not st.current_track:
         err = await message.reply(
-            "🕯️ Belum ada lagu yang berputar saat ini. Ketik <code>/play judul lagu</code> untuk memulai.",
+            "🎸 Belum ada lagu yang ngegas, bray. Ketik <code>/play judul lagu</code> atau pencet tombol di bawah:",
             parse_mode=ParseMode.HTML,
+            reply_markup=_group_menu_keyboard(),
         )
-        player.schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
+        player.schedule_delete(chat_id, [message.message_id, err.message_id], delay=20)
         return
 
     if st.now_playing_msg_id:
@@ -393,22 +520,25 @@ async def cmd_music_queue(message: types.Message):
 
     st = get_group_state(chat_id)
     if not st.current_track and not st.queue:
-        err = await message.reply("📭 Daftar putar malam ini masih kosong.")
+        err = await message.reply("📭 Antrean moshpit masih kosong melompong.")
         player.schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
         return
 
     lines = []
     if st.current_track:
         lines.append(
-            f"🎶 <b>Sedang Mengalun:</b> {html.escape(st.current_track.title)} "
+            f"🔥 <b>Lagi Ngegas:</b> {html.escape(st.current_track.title)} "
             f"(<i>{html.escape(st.current_track.requester_name)}</i>)"
         )
     for idx, t in enumerate(list(st.queue)[:10], start=1):
         lines.append(f"{idx}. {html.escape(t.title)} — <i>{html.escape(t.requester_name)}</i>")
 
     msg = await message.reply(
-        "📜 <b>Daftar Putar The Velvet Lounge</b>\n━━━━━━━━━━━━━━━━━━\n" + "\n".join(lines),
+        "📜 <b>Antrean Moshpit — Underground Stage</b>\n━━━━━━━━━━━━━━━━━━\n" + "\n".join(lines),
         parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="🎛 Buka Panel Player", callback_data="dj:panel")]]
+        ),
     )
     player.schedule_delete(chat_id, [message.message_id, msg.message_id], delay=40)
 
@@ -422,20 +552,20 @@ async def cmd_skip_song(message: types.Message):
 
     st = get_group_state(chat_id)
     if not st.current_track:
-        err = await message.reply("🕯️ Tidak ada lagu yang sedang diputar untuk dilewati.")
+        err = await message.reply("🎸 Kagak ada lagu yang lagi jalan buat di-skip.")
         player.schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
         return
 
     uid = message.from_user.id
     if uid != st.current_track.requester_id and not await is_user_admin_or_owner(chat_id, uid):
-        err = await message.reply("⛔ Hanya pemesan lagu ini atau Admin yang berhak mengganti trek.")
+        err = await message.reply("⛔ Cuma yang req lagu ini atau Admin yang boleh nendang trek.")
         player.schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
         return
 
     skipped_title = st.current_track.title
     await player.react_msg(chat_id, message.message_id, "⏭️")
     msg = await message.reply(
-        f"⏭️ Baiklah, aku lewati <b>{html.escape(skipped_title)}</b>.",
+        f"⏭️ Sip, <b>{html.escape(skipped_title)}</b> ditendang dari panggung!",
         parse_mode=ParseMode.HTML,
     )
     player.schedule_delete(chat_id, [message.message_id, msg.message_id], delay=20)
@@ -455,7 +585,7 @@ async def cmd_pause_song(message: types.Message):
 
     uid = message.from_user.id
     if uid != st.current_track.requester_id and not await is_user_admin_or_owner(chat_id, uid):
-        err = await message.reply("⛔ Hanya pemesan lagu ini atau Admin yang bisa menjeda musik.")
+        err = await message.reply("⛔ Cuma yang req lagu ini atau Admin yang bisa nge-rem musik.")
         player.schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
         return
 
@@ -474,10 +604,10 @@ async def cmd_pause_song(message: types.Message):
                 )
             except Exception:
                 pass
-        msg = await message.reply("⏸️ Alunan musik aku jeda sejenak.")
+        msg = await message.reply("⏸️ Musik di-rem bentar.")
         player.schedule_delete(chat_id, [message.message_id, msg.message_id], delay=15)
     except Exception as e:
-        err = await message.reply(f"Gagal menjeda: {e}")
+        err = await message.reply(f"Gagal nge-rem: {e}")
         player.schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
 
 
@@ -494,7 +624,7 @@ async def cmd_resume_song(message: types.Message):
 
     uid = message.from_user.id
     if uid != st.current_track.requester_id and not await is_user_admin_or_owner(chat_id, uid):
-        err = await message.reply("⛔ Hanya pemesan lagu ini atau Admin yang bisa melanjutkan musik.")
+        err = await message.reply("⛔ Cuma yang req lagu ini atau Admin yang bisa ngegas lagi.")
         player.schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
         return
 
@@ -513,10 +643,10 @@ async def cmd_resume_song(message: types.Message):
                 )
             except Exception:
                 pass
-        msg = await message.reply("▶️ Melanjutkan kembali melodi yang tertunda.")
+        msg = await message.reply("▶️ Gas pol lagi!")
         player.schedule_delete(chat_id, [message.message_id, msg.message_id], delay=15)
     except Exception as e:
-        err = await message.reply(f"Gagal melanjutkan: {e}")
+        err = await message.reply(f"Gagal ngegas: {e}")
         player.schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
 
 
@@ -531,7 +661,7 @@ async def cmd_stop_music(message: types.Message):
     uid = message.from_user.id
     if not await is_user_admin_or_owner(chat_id, uid):
         err = await message.reply(
-            "⛔ Perintah <code>/stop</code> hanya tersedia untuk Admin atau Owner.",
+            "⛔ Perintah <code>/stop</code> cuma buat Admin atau Owner tongkrongan.",
             parse_mode=ParseMode.HTML,
         )
         player.schedule_delete(chat_id, [message.message_id, err.message_id], delay=15)
@@ -554,5 +684,5 @@ async def cmd_stop_music(message: types.Message):
     except Exception:
         pass
 
-    msg = await message.reply("⏹️ Piringan hitam dihentikan dan seluruh antrean telah dibersihkan.")
+    msg = await message.reply("⏹️ Kabel ampli dicabut & seluruh antrean udah dibersihin!")
     player.schedule_delete(chat_id, [message.message_id, msg.message_id], delay=25)
