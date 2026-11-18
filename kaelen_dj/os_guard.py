@@ -7,8 +7,8 @@ from pyrogram.errors import UserAlreadyParticipant
 from pyrogram.raw import functions, types as raw_types
 from pytgcalls import PyTgCalls
 
-from config import OWNER_ID, OS_MUTE_SWEEP_INTERVAL, OS_IDLE_TIMEOUT, logger
-from state import groups, call_id_to_chat, is_group_allowed, get_group_state
+from kaelen_dj.config import OWNER_ID, OS_MUTE_SWEEP_INTERVAL, OS_IDLE_TIMEOUT, logger
+from kaelen_dj.state import groups, call_id_to_chat, is_group_allowed, get_group_state
 
 bot_ref: Bot | None = None
 assistant_ref: Client | None = None
