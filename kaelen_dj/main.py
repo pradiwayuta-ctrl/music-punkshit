@@ -74,6 +74,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-```[cite: 1]
-
-Pastikan juga file-file lain di dalam folder `kaelen_dj/` (`os_guard.py`, `handlers.py`, `player.py`, dll.) mengimpor modul internal menggunakan awalan `kaelen_dj.` (misal: `from kaelen_dj.config import ...` alih-alih `from config import ...`).
