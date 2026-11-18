@@ -15,20 +15,20 @@ from kaelen_dj.handlers import router
 
 async def register_commands(bot: Bot):
     group_cmds = [
-        BotCommand(command="start", description="Sapa Kaelen & cek status booth musik"),
-        BotCommand(command="play", description="Putar lagu di Obrolan Suara"),
-        BotCommand(command="np", description="Lihat & kontrol lagu yang sedang diputar"),
-        BotCommand(command="queue", description="Lihat daftar antrean lagu"),
-        BotCommand(command="skip", description="Lewati lagu saat ini"),
-        BotCommand(command="pause", description="Jeda musik di OS"),
-        BotCommand(command="resume", description="Lanjutkan musik yang dijeda"),
-        BotCommand(command="stop", description="[Admin] Hentikan musik & bersihkan antrean"),
-        BotCommand(command="feedback", description="Kirim masukan atau laporan ke pengelola"),
+        BotCommand(command="start", description="Nyalain sound system & buka menu tombol"),
+        BotCommand(command="play", description="Putar lagu / masukin antrean moshpit"),
+        BotCommand(command="np", description="Buka panel kontrol lagu yang lagi ngegas"),
+        BotCommand(command="queue", description="Cek daftar antrean lagu"),
+        BotCommand(command="skip", description="Tendang lagu yang lagi jalan"),
+        BotCommand(command="pause", description="Rem musik bentar"),
+        BotCommand(command="resume", description="Gas pol musik lagi"),
+        BotCommand(command="stop", description="[Admin] Cabut kabel ampli & bubarin antrean"),
+        BotCommand(command="feedback", description="Kirim bacotan atau laporan ke bos besar"),
     ]
     private_cmds = [
-        BotCommand(command="start", description="Mulai percakapan & lihat panduan"),
-        BotCommand(command="help", description="Panduan lengkap perintah DJ Lounge"),
-        BotCommand(command="feedback", description="Kirim saran atau laporan bug"),
+        BotCommand(command="start", description="Buka markas & menu tombol"),
+        BotCommand(command="help", description="Panduan nge-gig di grup"),
+        BotCommand(command="feedback", description="Kirim keluhan atau request fitur"),
     ]
     await bot.set_my_commands(group_cmds, scope=BotCommandScopeAllGroupChats())
     await bot.set_my_commands(private_cmds, scope=BotCommandScopeAllPrivateChats())
@@ -50,7 +50,8 @@ async def main():
     assistant.on_raw_update()(enforce_os_listener_mute)
 
     call_py = PyTgCalls(assistant)
-    call_py.on_update(tgcalls_filters.stream_end())(on_tgcalls_stream_ended)
+    # PERBAIKAN: Hapus tanda kurung () pada stream_end
+    call_py.on_update(tgcalls_filters.stream_end)(on_tgcalls_stream_ended)
 
     await assistant.start()
     me = await assistant.get_me()
