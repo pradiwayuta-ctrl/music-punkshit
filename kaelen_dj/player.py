@@ -23,10 +23,10 @@ def init_player(bot: Bot, call_py: PyTgCalls):
 
 
 def mention(uid: int, name: str) -> str:
-    return f'<a href="tg://user?id={uid}">{html.escape(name or "Tamu")}</a>'
+    return f'<a href="tg://user?id={uid}">{html.escape(name or "Brader")}</a>'
 
 
-async def react_msg(chat_id: int, message_id: int, emoji: str = "🍷"):
+async def react_msg(chat_id: int, message_id: int, emoji: str = "🤘"):
     try:
         await bot_ref.set_message_reaction(
             chat_id=chat_id,
@@ -83,19 +83,20 @@ async def send_group_msg(
 
 def build_player_keyboard(is_paused: bool) -> InlineKeyboardMarkup:
     toggle_btn = (
-        InlineKeyboardButton(text="▶️ Lanjutkan", callback_data="dj:resume")
+        InlineKeyboardButton(text="▶️ Gas Lagi", callback_data="dj:resume")
         if is_paused
-        else InlineKeyboardButton(text="⏸ Jeda", callback_data="dj:pause")
+        else InlineKeyboardButton(text="⏸ Rem Dulu", callback_data="dj:pause")
     )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 toggle_btn,
-                InlineKeyboardButton(text="⏭ Lewati", callback_data="dj:skip"),
-                InlineKeyboardButton(text="⏹ Hentikan", callback_data="dj:stop"),
+                InlineKeyboardButton(text="⏭ Ganti Trek", callback_data="dj:skip"),
+                InlineKeyboardButton(text="⏹ Cabut Kabel", callback_data="dj:stop"),
             ],
             [
-                InlineKeyboardButton(text="📜 Daftar Antrean", callback_data="dj:queue"),
+                InlineKeyboardButton(text="📜 Antrean Moshpit", callback_data="dj:queue"),
+                InlineKeyboardButton(text="🔄 Refresh Panel", callback_data="dj:refresh"),
             ],
         ]
     )
@@ -104,19 +105,19 @@ def build_player_keyboard(is_paused: bool) -> InlineKeyboardMarkup:
 def format_now_playing_text(st: GroupState) -> str:
     track = st.current_track
     if not track:
-        return "🕯️ <i>Ruangan sedang hening. Belum ada piringan hitam yang berputar.</i>"
-    state_label = "⏸ Dijeda" if st.is_paused else "🎶 Sedang Mengalun"
+        return "🎸 <i>Ampli lagi mati, bray. Belum ada distorsi yang ngegas.</i>"
+    state_label = "⏸ Lagi Di-Pause" if st.is_paused else "🔥 Lagi Ngegas"
     link_part = (
         f'<a href="{html.escape(track.webpage_url)}">{html.escape(track.title)}</a>'
         if track.webpage_url
         else f"<b>{html.escape(track.title)}</b>"
     )
     return (
-        f"🎧 <b>Kaelen's Lounge — {state_label}</b>\n"
+        f"🤘 <b>UNDERGROUND STAGE — {state_label}</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"• <b>Trek:</b> {link_part} (<code>{track.duration}</code>)\n"
-        f"• <b>Pilihan:</b> {mention(track.requester_id, track.requester_name)}\n"
-        f"• <b>Sumber:</b> {html.escape(track.source_label)} • <b>Antrean:</b> {len(st.queue)} lagu"
+        f"• <b>Yang Req:</b> {mention(track.requester_id, track.requester_name)}\n"
+        f"• <b>Lapak:</b> {html.escape(track.source_label)} • <b>Sisa Antrean:</b> {len(st.queue)} lagu"
     )
 
 
@@ -162,7 +163,7 @@ async def play_next_in_queue(chat_id: int):
             call = await ensure_voice_chat_open_and_muted(chat_id)
             if not call:
                 raise RuntimeError(
-                    "Akun Asisten belum memiliki akses Admin dengan izin Manage Voice Chats."
+                    "Akun asisten belum dikasih pangkat Admin + izin Manage Voice Chats, coy!"
                 )
 
             stream = MediaStream(
@@ -187,8 +188,8 @@ async def play_next_in_queue(chat_id: int):
             logger.error("PyTgCalls play error di grup %s: %s", chat_id, e)
             await send_group_msg(
                 chat_id,
-                f"⚠️ Maaf, piringan hitam untuk <b>{html.escape(next_track.title)}</b> gagal diputar.\n"
-                f"<i>Alasan: {html.escape(str(e))}</i>",
+                f"💥 Kacau! Kaset <b>{html.escape(next_track.title)}</b> nyangkut di tape.\n"
+                f"<i>Biang kerok: {html.escape(str(e))}</i>",
                 thread_id=next_track.thread_id,
                 auto_delete=30,
             )
@@ -218,7 +219,7 @@ async def enqueue_song_request(
     if not info:
         await send_group_msg(
             chat_id,
-            f"🥀 Aku sudah mencari ke seluruh rak arsip, tapi <b>{html.escape(query)}</b> tidak ditemukan.",
+            f"💀 Udah gue ubek-ubek gudang kaset, tapi <b>{html.escape(query)}</b> kagak ketemu, bray.",
             thread_id=thread_id,
             auto_delete=25,
         )
@@ -254,11 +255,19 @@ async def enqueue_song_request(
     elif announce_queue:
         await send_group_msg(
             chat_id,
-            f"💿 <b>Masuk Daftar Putar (#{pos})</b>\n"
+            f"📼 <b>Masuk Antrean Moshpit (#{pos})</b>\n"
             f"• <b>Lagu:</b> {html.escape(track.title)} (<code>{track.duration}</code>)\n"
-            f"• <b>Pesanan:</b> {mention(uid, requester_name)}\n"
-            f"<i>Duduk santai dulu, gilirannya akan segera tiba.</i>",
+            f"• <b>Yang Req:</b> {mention(uid, requester_name)}\n"
+            f"<i>Sabar ya bray, ntar juga giliran lu ngegas!</i>",
             thread_id=thread_id,
             auto_delete=35,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="📜 Cek Antrean", callback_data="dj:queue"),
+                        InlineKeyboardButton(text="🎛 Panel Player", callback_data="dj:panel"),
+                    ]
+                ]
+            ),
         )
     return True
