@@ -5,10 +5,10 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, ChatMemberUpdated, InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.enums import ParseMode
 
-from config import OWNER_ID, logger
-from state import is_group_allowed, get_group_state
-from os_guard import ensure_assistant_in_group, is_user_admin_or_owner
-import player
+from kaelen_dj.config import OWNER_ID, logger
+from kaelen_dj.state import is_group_allowed, get_group_state
+from kaelen_dj.os_guard import ensure_assistant_in_group, is_user_admin_or_owner
+from kaelen_dj import player
 
 router = Router()
 
