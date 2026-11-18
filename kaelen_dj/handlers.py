@@ -686,3 +686,55 @@ async def cmd_stop_music(message: types.Message):
 
     msg = await message.reply("⏹️ Kabel ampli dicabut & seluruh antrean udah dibersihin!")
     player.schedule_delete(chat_id, [message.message_id, msg.message_id], delay=25)
+
+# --- COMMAND KHUSUS OWNER UNTUK KELOLA GRUP ---
+@router.message(Command("addgroup"))
+async def cmd_add_group(message: types.Message):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    from kaelen_dj.config import ALLOWED_GROUPS
+    parts = (message.text or "").split(maxsplit=1)
+
+    # Jika diketik di dalam grup tanpa argumen, otomatis pakai ID grup tersebut
+    if len(parts) < 2:
+        if message.chat.type in ("group", "supergroup"):
+            target_id = message.chat.id
+        else:
+            await message.reply(
+                "🤘 Ketik <code>/addgroup -100xxxxxxxxxx</code> di PC, atau ketik <code>/addgroup</code> langsung di dalam grupnya!",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+    else:
+        raw_id = parts[1].strip()
+        if not raw_id.lstrip("-").isdigit():
+            await message.reply("💥 ID grup harus berupa angka (contoh: <code>-1001234567890</code>).", parse_mode=ParseMode.HTML)
+            return
+        target_id = int(raw_id)
+
+    ALLOWED_GROUPS.add(target_id)
+    if target_id > 0:
+        ALLOWED_GROUPS.add(int(f"-100{target_id}"))
+
+    await message.reply(
+        f"✅ Mantap bos! Grup <code>{target_id}</code> resmi masuk daftar tamu VIP.\n"
+        f"<i>(Catatan: Simpan juga di ENV ALLOWED_GROUPS biar permanen kalau bot restart)</i>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@router.message(Command("delgroup"))
+async def cmd_del_group(message: types.Message):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    from kaelen_dj.config import ALLOWED_GROUPS
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip().lstrip("-").isdigit():
+        await message.reply("🤘 Format: <code>/delgroup -100xxxxxxxxxx</code>", parse_mode=ParseMode.HTML)
+        return
+
+    target_id = int(parts[1].strip())
+    ALLOWED_GROUPS.discard(target_id)
+    await message.reply(f"🗑️ Grup <code>{target_id}</code> udah ditendang dari daftar VIP.", parse_mode=ParseMode.HTML)
