@@ -7,10 +7,10 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReactionTy
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream, AudioQuality, StreamEnded
 
-from config import AUTO_DELETE_DELAY, logger
-from state import GroupState, TrackItem, get_group_state, is_group_allowed, spawn_task
-from os_guard import ensure_voice_chat_open_and_muted, unmute_assistant_in_call, mute_all_non_admins
-from music_finder import resolve_audio_track
+from kaelen_dj.config import AUTO_DELETE_DELAY, logger
+from kaelen_dj.state import GroupState, TrackItem, get_group_state, is_group_allowed, spawn_task
+from kaelen_dj.os_guard import ensure_voice_chat_open_and_muted, unmute_assistant_in_call, mute_all_non_admins
+from kaelen_dj.music_finder import resolve_audio_track
 
 bot_ref: Bot | None = None
 call_py_ref: PyTgCalls | None = None
